@@ -113,9 +113,9 @@ let rawCamera,
     renderer2,
     rawTarget,
     depthTarget,
-    blurTarget,
-    blurTargetH,
-    blurTargetV,
+    smudgeTarget,
+    smudgeTargetH,
+    smudgeTargetV,
     composer;
 var bvShader,
     bfShader;
@@ -251,10 +251,10 @@ loader.load('assets/shaders/post.vert', function (data) {
     loader.load('assets/shaders/post.frag', function (data) {
         PostProcShader.fragmentShader = data;
         
-        loader.load('assets/shaders/blur.vert', function (data) {
+        loader.load('assets/shaders/smudge.vert', function (data) {
             BlurShader.vertexShader = data;
             
-            loader.load('assets/shaders/blur.frag', function (data) {
+            loader.load('assets/shaders/smudge.frag', function (data) {
                 BlurShader.fragmentShader = data;
                 reset();
             });
@@ -341,11 +341,11 @@ var palettesstrings = [
     'fe5d26-f2c078-faedca-c1dbb3-7ebc89-3d5a80-98c1d9-e0fbfc-ee6c4d-293241'
 ];
 
-let blurCamera;
-let blurScene;
-let blurGeometry;
-let blurMaterial;
-let blurMesh;
+let smudgeCamera;
+let smudgeScene;
+let smudgeGeometry;
+let smudgeMaterial;
+let smudgeMesh;
 let postprocCamera;
 let postprocScene;
 let postprocGeometry;
@@ -447,16 +447,7 @@ function reset() {
     scrollscale = 1.3;
     frameCount = 0;
     seed = fxrand() * 10000;
-    horizon = map(fxrand(), 0, 1, 0.24, 0.93);
 
-    isDark = fxrand() < .08;
-
-    hasSun = fxrand() < .5;
-
-    wind = map(fxrand(), 0, 1, -.4, + .4);
-    if (fxrand() < .5) 
-        wind = 3.14 + wind;
-    
     canvasWidth = ress;
     canvasHeight = ress;
 
@@ -471,7 +462,7 @@ function reset() {
 
     omx = 1.;
     omy = 1.;
-    if(fxrand() < 1.66){
+    if(fxrand() < .66){
         if(fxrand() < .5){
             omx = .75;
             omy = 1.;
@@ -481,6 +472,8 @@ function reset() {
             omy = .75;
         }
     }
+    omx = .75;
+    omy = 1.;
 
     if (ww < ress + 16 || wh < ress + 16 || true) {
         canvasWidth = mm * omx- 133 * mm / ress;
@@ -591,11 +584,11 @@ function loadShadersAndData() {
             loadData();
         }
     }
-    // loader.load('./assets/shaders/blur.frag', function (data) {
+    // loader.load('./assets/shaders/smudge.frag', function (data) {
     //     bfShader = data;
     //     runMoreIfDone();
     // });
-    // loader.load('./assets/shaders/blur.vert', function (data) {
+    // loader.load('./assets/shaders/smudge.vert', function (data) {
     //     bvShader = data;
     //     runMoreIfDone();
     // });
@@ -698,10 +691,10 @@ function getSwirlMesh(path, dy = 0, rw = 5, parts = 40, width = 5 * 40, pp=0.0) 
     for (let k = 0; k < path.length; k++) {
         let rx = 0;
         let ry = 0;
-        let rz = 0;
-        let ssca = .1+.9*power(noise(k*0.1, 313.13), 4.);
+        let rz = k*.1;
+        let ssca = .9+.2*power(noise(k*0.01, 313.13), 4.);
         ssca = 1.;
-        ssca = map(k, 0, path.length-1, 1, .5);
+        // ssca = map(k, 0, path.length-1, 1, .5);
        // swiched Y and Z because I want 2D path to map to XZ, not XY
         for (let t = 0; t < parts; t++) {
             let tt = map(t, 0, parts - 1, 0, parts);
@@ -712,7 +705,6 @@ function getSwirlMesh(path, dy = 0, rw = 5, parts = 40, width = 5 * 40, pp=0.0) 
             );
         }
     }
-
     let cfrq = random(.002, .007);
     for (let k = 0; k < path.length; k++) {
         for (let t = 0; t < parts; t++) {
@@ -792,11 +784,41 @@ function loadData() {
     // canvasWidth/2/winScale, canvasHeight/2/winScale, -canvasHeight/2/winScale, 1,
     // 2000); camera = new THREE.OrthographicCamera( 1000 * 1. / - 2, 1000 * 1. / 2,
     // 1000 / 2, 1000 / - 2, 1, 4000 );
+    let zoox = random(88, 666);
+    zoox = fxrand() < .5 ? random(140, 200) : random(350, 600);
+    let zooy = random(88, 666);
+    zooy = fxrand() < .5 ? random(140, 200) : random(350, 600);
+
+    if(omx == omy){
+        zoox = Math.round(random(150, 300));
+        zooy = Math.round(random(400, 480));
+
+        if(fxrand() < .5){
+            zooy = Math.round(random(150, 300));
+            zoox = Math.round(random(400, 480));
+        }
+
+        if(fxrand() < .3){
+            zooy = Math.round(random(150, 300));
+            zoox = Math.round(random(150, 300));
+        }
+    }
+    if(omx > omy){
+        zoox = Math.round(random(200, 300));
+        zoox = fxrand() < .5 ? Math.round(random(240, 300)) : Math.round(random(350, 450));
+    }
+    if(omx < omy){
+        zoox = Math.round(random(200, 450));
+        zooy = Math.round(random(240, 300));
+    }
+    zoox = zooy = 200;
+    console.log(`${omx} : ${omy} ratio, ${zoox} : ${zooy} view`);
+
     rawCamera = new THREE.OrthographicCamera(
-        -omx*300 / 2,
-        omx*300 / 2,
-        omy*300 / 2,
-        -omy*300 / 2,
+        -omx*zoox / 2,
+        omx*zoox / 2,
+        omy*zooy / 2,
+        -omy*zooy / 2,
         1,
         4000
     );
@@ -903,17 +925,22 @@ function loadData() {
 
     //console.log(vShader);
 
-    let totalh = random(22, 220);
+    let totalh = random(140, 200);
     let nh = Math.round(random(1, 4));
-    if (fxrand() < .5) 
+    if (fxrand() < -.5) 
         nh = 1;
     nh = 1;
-    //totalh = 22;
+
     // nh = Math.round(random(111, 122));
     let oneh = totalh / nh;
     let initpts = getPathPts();
     let nptsa1 = [];
     let nptsa2 = [];
+
+    let isHooby = fxrand() < .5;
+
+    let initPath = getPathPtsSingle();
+    let processedPaths = [];
     for (let k = 0; k < nh; k++) {
         let yy;
         if (nh == 1) 
@@ -928,24 +955,33 @@ function loadData() {
         let npts = [];
         let marg = random(.9, .95);
         let npo = Math.round(random(24, 25));
-        for (let q = 0; q < npo; q++) {
-            let npt = new myVec(0, 0);
-            let amp = map(q, 0, npo-1, 0, 1);
-            amp = map(Math.pow(amp, 3), 0, 1, 0, 115) * power(noise(k * 0.07), 4.);
-            npt.x = map(power(noise(q*0.1, 41.31), 3.), 0, 1, -omx*400/2*.95, omx*400/2*.95);
-            npt.x = map(fxrand(), 0, 1, -omx*400/2*.95, omx*400/2*.95);
-            npt.y = map(q, 0, npo-1, -(omy*400/2-totalh/2)*marg, (omy*400/2-totalh/2)*marg);
-            npt.z = map(q, 0, npo-1, -100, 100);
-            npts.push(npt);
+        // for (let q = 0; q < npo; q++) {
+        //     let npt = new myVec(0, 0);
+        //     let amp = map(q, 0, npo-1, 0, 1);
+        //     amp = map(Math.pow(amp, 3), 0, 1, 0, 115) * power(noise(k * 0.07), 4.);
+        //     npt.x = map(power(noise(q*0.1, 41.31), 3.), 0, 1, -omx*400/2*.95, omx*400/2*.95);
+        //     npt.x = map(fxrand(), 0, 1, -omx*400/2*.95, omx*400/2*.95);
+        //     npt.y = map(q, 0, npo-1, -(omy*400/2-totalh/2)*marg, (omy*400/2-totalh/2)*marg);
+        //     npt.z = map(q, 0, npo-1, -100, 100);
+        //     npts.push(npt);
+        // }
+        // if(k == 0){
+        //     nptsa1 = npts;
+        // }
+        // if(k == nh-1){
+        //     nptsa2 = npts;
+        // }
+        let initPathWiggled = wiggle(initPath, .1+0*random(0, 4));
+
+        let hobbypath;
+        if(fxrand() < isHooby){
+            hobbypath = getHobbyPath(initPathWiggled);
+            // hobbypath = centered(getHobbyPath(initPath), width, k/max(1, nh-1), false);
         }
-        if(k == 0){
-            nptsa1 = npts;
+        else{
+            hobbypath = initPathWiggled;
+            // hobbypath = centered(initPath, width, k/max(1, nh-1), false);
         }
-        if(k == nh-1){
-            nptsa2 = npts;
-        }
-        //let hobbypath = getHobbyPath(npts);
-        let hobbypath = centered(npts);
         //let hobbypath = npts;
         let shortened = [];
         let kaka = map(fxrand(), 0, 1, .5, 1.);
@@ -956,8 +992,67 @@ function loadData() {
         for(let t = 0; t < hobbypath.length*kaka; t++){
             shortened.push(hobbypath[t]);
         }
-        console.log(shortened)
-        const swirl = getSwirlMesh(shortened, yy, rw, parts, width, nh==1 ? 0. : k/(nh-1));
+        //  const swirl = getSwirlMesh(shortened, yy, rw, parts, width, k/max(1, nh-1));
+        processedPaths.push(shortened);
+        //  swirls.push(swirl);
+        //  scene.add(swirl);
+    }
+    let adjustedPaths = [];
+    
+    let minx = 100000;
+    let miny = 100000;
+    let maxx = -100000;
+    let maxy = -100000;
+    for(let k = 0; k < processedPaths.length; k++){
+        let path = processedPaths[k];
+        let yy;
+        if (nh == 1) 
+            yy = 0;
+        else 
+            yy = map(k, 0, nh - 1, -(totalh / 2 - oneh / 2), (totalh / 2 - oneh / 2));
+        let rw = 1.;
+        //let parts = 5;  minimalno 2
+        let parts = max(1, Math.round(oneh / rw));
+        rw = oneh / parts;
+        let width = rw * parts;
+
+        console.log("yy", yy);
+        let bb = getBB(path, width, yy);
+        
+        if(bb.x1 < minx) minx = bb.x1;
+        if(bb.y1 < miny) miny = bb.y1;
+        if(bb.x2 > maxx) maxx = bb.x2;
+        if(bb.y2 > maxy) maxy = bb.y2;
+    }
+
+    let bb = {'x1': minx, 'y1': miny, 'x2': maxx, 'y2': maxy};
+    console.log(bb)
+    let sx = random(.8, .8715);
+    let sy = random(.8, .8715);
+    if(fxrand() < .5){
+        sx *= random(.4, .6);
+    }
+
+    for(let k = 0; k < processedPaths.length; k++){
+        let centered = centerPath(processedPaths[k], bb, sx, sy)
+        adjustedPaths.push(centered);
+    }
+    
+    for(let k = 0; k < adjustedPaths.length; k++){
+        let swirl = adjustedPaths[k];
+        let yy;
+        if (nh == 1) 
+            yy = 0;
+        else 
+            yy = map(k, 0, nh - 1, -(totalh / 2 - oneh / 2), (totalh / 2 - oneh / 2));
+        let rw = 1.;
+        //let parts = 5;  minimalno 2
+        let parts = max(1, Math.round(oneh / rw));
+        rw = oneh / parts;
+        let width = rw * parts;
+        console.log(width)
+
+        swirl = getSwirlMesh(swirl, yy, rw, parts, width, k/max(1, nh-1));
         swirls.push(swirl);
         scene.add(swirl);
     }
@@ -1072,17 +1167,17 @@ function loadData() {
         baseHeight * pixelRatio
     );
 
-    blurTarget = new THREE.WebGLRenderTarget(
+    smudgeTarget = new THREE.WebGLRenderTarget(
         baseWidth * pixelRatio,
         baseHeight * pixelRatio
     );
 
-    blurTargetH = new THREE.WebGLRenderTarget(
+    smudgeTargetH = new THREE.WebGLRenderTarget(
         baseWidth * pixelRatio,
         baseHeight * pixelRatio
     );
 
-    blurTargetV = new THREE.WebGLRenderTarget(
+    smudgeTargetV = new THREE.WebGLRenderTarget(
         baseWidth * pixelRatio,
         baseHeight * pixelRatio
     );
@@ -1120,7 +1215,6 @@ function loadData() {
     rawCamera.position.z = 666;
     rawCamera.position.y = 0;
     rawCamera.lookAt(new THREE.Vector3(0,0,0));
-    console.log(rawCamera)
     orbitcontrols = new OrbitControls(rawCamera, renderer.domElement);
     // camera.lookAt(new THREE.Vector3(0,5,0)); OVO
     //renderer2.setRenderTarget(rawTarget); 
@@ -1165,7 +1259,7 @@ function loadData() {
     var p = .85;
 
     
-    blurCamera = new THREE.OrthographicCamera(
+    smudgeCamera = new THREE.OrthographicCamera(
         -omx*400 / 2,
         omx*400 / 2,
         omy*400 / 2,
@@ -1173,18 +1267,18 @@ function loadData() {
         1,
         4000
     );
-    blurCamera.position.z = 666;
-    blurScene = new THREE.Scene(); 
-    blurGeometry = new THREE.PlaneGeometry(400*omx, 400*omy); 
-    blurMaterial = new THREE.ShaderMaterial({
+    smudgeCamera.position.z = 666;
+    smudgeScene = new THREE.Scene(); 
+    smudgeGeometry = new THREE.PlaneGeometry(400*omx, 400*omy); 
+    smudgeMaterial = new THREE.ShaderMaterial({
              uniforms: BlurShader.uniforms,
              vertexShader: BlurShader.vertexShader,     
              fragmentShader: BlurShader.fragmentShader,     
              transparent:  false 
     }); 
-    blurMesh = new THREE.Mesh(blurGeometry, blurMaterial);
-    blurMesh.material.uniforms.resolution.value = [canvasWidth*pixelRatio, canvasHeight*pixelRatio];
-    blurScene.add(blurMesh);
+    smudgeMesh = new THREE.Mesh(smudgeGeometry, smudgeMaterial);
+    smudgeMesh.material.uniforms.resolution.value = [canvasWidth*pixelRatio, canvasHeight*pixelRatio];
+    smudgeScene.add(smudgeMesh);
     
     postprocCamera = new THREE.OrthographicCamera(
         -omx*400 / 2,
@@ -1208,7 +1302,7 @@ function loadData() {
     postprocScene.add(postprocMesh);
    
     scene.background = new THREE.Color(...bbc);
-    scene.background = new THREE.Color(.1,.1,.1);
+    scene.background = new THREE.Color(.03, .03, .03);
     
     renderRoutine();
 
@@ -1223,6 +1317,22 @@ function loadData() {
     //window.addEventListener( 'resize',
     // onWindowResize ); window.onmousemove = animate; window.onmouseup =
     // function(){isdown = false; mouseprev.x = mouse.x; mouseprev.y = mouse.y;};
+}
+
+function wiggle(path, aamp=1){
+    
+    let wiggled = [];
+    for (let q = 0; q < path.length; q++) {
+        let pt = path[q];
+        let npt = new myVec(pt.x, pt.y);
+        let amp = map(q, 0, path.length - 1, 0, 1);
+        amp = map(Math.pow(amp, 3), 0, 1, 0, 15) * power(noise(k * 0.07), 4.);
+        npt.x += map(fxrand(), 0, 1, -amp, amp)*aamp;
+        npt.y += map(fxrand(), 0, 1, -amp, amp)*aamp;
+        wiggled.push(npt);
+    }
+
+    return wiggled;
 }
 
 let bmseed = fxrand();
@@ -1244,69 +1354,133 @@ function renderRoutine(){
         let sw = swirls[k];
         sw.material.uniforms.algo.value = 1.0;
     }
-    scene.background = new THREE.Color(1, 1, 1);
+    scene.background = new THREE.Color(0,0,0);
     renderer.setRenderTarget(depthTarget); 
     renderer.setClearColor( new THREE.Color(0,0,0) );
     renderer.clear();
     renderer.render(scene, rawCamera);
 
     let finalBlurTexture = depthTarget.texture;
-    blurMesh.material.uniforms.tDiffuse.value = finalBlurTexture;
+    smudgeMesh.material.uniforms.tDiffuse.value = finalBlurTexture;
     
-    blurMesh.material.uniforms.dmap.value = depthTarget.texture;
-    blurMesh.material.uniforms.seed.value = bmseed;
+    smudgeMesh.material.uniforms.dmap.value = depthTarget.texture;
     for(let k = 0; k < 1; k++){
-        blurMesh.material.uniforms.tDiffuse.value = finalBlurTexture;
-        blurMesh.material.uniforms.uDir.value = [1, 0];
-        blurMesh.material.uniforms.amp.value = 2.;
-        renderer.setRenderTarget(blurTargetH); 
+        smudgeMesh.material.uniforms.tDiffuse.value = finalBlurTexture;
+        smudgeMesh.material.uniforms.uDir.value = [1, 0];
+        smudgeMesh.material.uniforms.amp.value = 2.;
+        renderer.setRenderTarget(smudgeTargetH); 
         renderer.setClearColor( new THREE.Color(0,0,0) );
         renderer.clear();
-        renderer.render(blurScene, blurCamera);
+        renderer.render(smudgeScene, smudgeCamera);
         
-        blurMesh.material.uniforms.tDiffuse.value = blurTargetH.texture;
-        blurMesh.material.uniforms.uDir.value = [0, 1];
-        blurMesh.material.uniforms.amp.value = .06;
-        renderer.setRenderTarget(blurTargetV);
+        smudgeMesh.material.uniforms.tDiffuse.value = smudgeTargetH.texture;
+        smudgeMesh.material.uniforms.uDir.value = [0, 1];
+        smudgeMesh.material.uniforms.amp.value = .06;
+        renderer.setRenderTarget(smudgeTargetV);
         renderer.setClearColor( new THREE.Color(0,0,0) );
         renderer.clear();
-        renderer.render(blurScene, blurCamera);
+        renderer.render(smudgeScene, smudgeCamera);
 
-        finalBlurTexture = blurTargetV.texture;
+        finalBlurTexture = smudgeTargetV.texture;
     }
 
-    scene.background = new THREE.Color(.1, .1, .1);
-    blurMesh.material.uniforms.seed.value = fxrand();
+    scene.background = new THREE.Color(.03, .03, .03);
     finalBlurTexture = rawTarget.texture;
-    for(let k = 0; k < 10; k++){
-        blurMesh.material.uniforms.tDiffuse.value = finalBlurTexture;
-        blurMesh.material.uniforms.uDir.value = [1, 0];
-        blurMesh.material.uniforms.amp.value = 2.;
-        renderer.setRenderTarget(blurTargetH); 
+    smudgeMesh.material.uniforms.seed.value = fxrand();
+    let bval = random(1, 2);
+    for(let k = 0; k < 4; k++){
+        smudgeMesh.material.uniforms.tDiffuse.value = finalBlurTexture;
+        smudgeMesh.material.uniforms.uDir.value = [1, 0];
+        smudgeMesh.material.uniforms.amp.value = 2.;
+        renderer.setRenderTarget(smudgeTargetH); 
         renderer.setClearColor( new THREE.Color(0,0,0) );
         renderer.clear();
-        renderer.render(blurScene, blurCamera);
+        renderer.render(smudgeScene, smudgeCamera);
         
-        blurMesh.material.uniforms.tDiffuse.value = blurTargetH.texture;
-        blurMesh.material.uniforms.uDir.value = [0, 1];
-        blurMesh.material.uniforms.amp.value = .02;
-        renderer.setRenderTarget(blurTarget);
+        smudgeMesh.material.uniforms.tDiffuse.value = smudgeTargetH.texture;
+        smudgeMesh.material.uniforms.uDir.value = [0, 1];
+        smudgeMesh.material.uniforms.amp.value = 2.;
+        renderer.setRenderTarget(smudgeTarget);
         renderer.setClearColor( new THREE.Color(0,0,0) );
         renderer.clear();
-        renderer.render(blurScene, blurCamera);
-        finalBlurTexture = blurTarget.texture;
+        renderer.render(smudgeScene, smudgeCamera);
+        finalBlurTexture = smudgeTarget.texture;
     }
 
+    postprocMesh.material.uniforms.seed1.value = fxrand();
+    postprocMesh.material.uniforms.ztime.value = fxrand();
     postprocMesh.material.uniforms.tDiffuse.value = rawTarget.texture;
     postprocMesh.material.uniforms.tDiffuse2.value = depthTarget.texture;
-    postprocMesh.material.uniforms.tDiffuse3.value = blurTargetV.texture;
-    postprocMesh.material.uniforms.tDiffuse4.value = blurTarget.texture;
+    postprocMesh.material.uniforms.tDiffuse3.value = smudgeTargetV.texture;
+    postprocMesh.material.uniforms.tDiffuse4.value = smudgeTarget.texture;
 
     renderer.setRenderTarget(null);
     renderer.setClearColor( new THREE.Color(0,0,0) );
     renderer.clear();
     //renderer.setClearColor( new THREE.Color(palette[0][0], palette[0][1], palette[0][2]) );
     renderer.render(postprocScene, postprocCamera);
+}
+
+
+function getPathPtsSingle() {
+    let striw = random(.08, .8);
+    let pts = [];
+    let frae = random(.03, .3);
+    if (fxrand() < 1.5) {
+        let nn = random(4, 62);
+        for (let k = 0; k < nn; k++) {
+            pts.push(new myVec(
+                0.24 * map(power(noise(k * frae, 985.33), 2), 0, 1, -1000 / 2 * 1.4, 1000 / 2 * 1.4),
+                0.24 * map(k, 0, nn - 1, -1010 / 2, 1010 / 2) * 1.1 + 0.24 * map(power(noise(k * 1.3, 123.33), 2), 0, 1, -1010 / 2 * .3, 1010 / 2 * .3),
+            ));
+        }
+    } else {
+        let nn = random(4, 64);
+        for (let k = 0; k < nn; k++) {
+            pts.push(
+                new myVec(0.24 * random(-1000 / 2, 1000 / 2), 0.24 * random(-1010 / 2 * striw, 1010 / 2 * striw),)
+            );
+        }
+    }
+
+    let hp = getHobbyPath(pts);
+    let minx = 100000;
+    let miny = 100000;
+    let maxx = -100000;
+    let maxy = -100000;
+    for(let k = 0; k < hp.length; k++){
+        let p = hp[k];
+        if(p.x < minx) minx = p.x;
+        if(p.y < miny) miny = p.y;
+        if(p.x > maxx) maxx = p.x;
+        if(p.y > maxy) maxy = p.y;
+    }
+    let midx = (minx + maxx)/2;
+    let midy = (miny + maxy)/2;
+
+    let scax = Math.abs(maxx-minx);
+    let scay = Math.abs(maxy-miny);
+
+
+    if(omy < 1.){
+        //scax = scay = 170/scay;
+        scax = 300/scax;
+        scay = 170/scay;
+        console.log('hello');
+        console.log(minx, maxx, miny, maxy);
+        console.log(scax, scay);
+    }
+    else{
+        scax = scay = 300/scay;
+    }
+    
+    let shifted = [];
+    for(let k = 0; k < pts.length; k++){
+        let p = pts[k];
+        shifted.push(new myVec(scax*(p.x-midx), scay*(p.y-midy)))
+    }
+
+    return shifted;
 }
 
 function getPathPts() {
@@ -1349,7 +1523,7 @@ let dtime = 1. / 30;
 let ttime = 0;
 let firsttime = true;
 
-function centered(pts){
+function getBB(pts, oneh, shift){
     let minx = 100000;
     let miny = 100000;
     let maxx = -100000;
@@ -1357,9 +1531,53 @@ function centered(pts){
     for(let k = 0; k < pts.length; k++){
         let p = pts[k];
         if(p.x < minx) minx = p.x;
-        if(p.y < miny) miny = p.y;
+        if(p.y+shift - oneh < miny) miny = p.y+shift - oneh;
         if(p.x > maxx) maxx = p.x;
-        if(p.y > maxy) maxy = p.y;
+        if(p.y+shift + oneh > maxy) maxy = p.y+shift + oneh;
+    }
+    return {'x1': minx, 'y1': miny, 'x2': maxx, 'y2': maxy}
+}
+
+function centerPath(pts, bb, rx, ry){
+
+    let minx = bb.x1;
+    let miny = bb.y1;
+    let maxx = bb.x2;
+    let maxy = bb.y2;
+
+    let midx = (minx + maxx)/2;
+    let midy = (miny + maxy)/2;
+
+    let scax = Math.abs(maxx-minx);
+    let scay = Math.abs(maxy-miny);
+
+    if(rx && ry){
+        scax = omx*400/scax*rx;
+        scay = omy*400/scay*ry;
+    }
+    else{
+        scax = scay = 1;
+    }
+    console.log(scax, scay)
+    let shiftedAndScaled = [];
+    for(let k = 0; k < pts.length; k++){
+        let p = pts[k];
+        shiftedAndScaled.push(new myVec(scax*(p.x-midx), scay*(p.y-midy), p.z))
+    }
+    return shiftedAndScaled;
+}
+
+function centered(pts, oneh, rescale=true){
+    let minx = 100000;
+    let miny = 100000;
+    let maxx = -100000;
+    let maxy = -100000;
+    for(let k = 0; k < pts.length; k++){
+        let p = pts[k];
+        if(p.x < minx) minx = p.x;
+        if(p.y - oneh < miny) miny = p.y - oneh;
+        if(p.x > maxx) maxx = p.x;
+        if(p.y + oneh > maxy) maxy = p.y + oneh;
     }
     let midx = (minx + maxx)/2;
     let midy = (miny + maxy)/2;
@@ -1376,13 +1594,17 @@ function centered(pts){
     //     scay = omy*400/scay;
     // }
 
-    if(scax < 150){
-        scax = omx*400/scax*random(.9, .95);
-        scay = 1;
-    }
-    else{
+    if(!rescale){
         scax = scay = 1;
     }
+    else{
+        scax = omx*400/scax*random(.9, .95);
+        scay = omy*400/scay*random(.9, .95);
+        if(fxrand() < .5){
+            scax *= random(.4, .6);
+        }
+    }
+
     
     let shiftedAndScaled = [];
     for(let k = 0; k < pts.length; k++){
@@ -1684,7 +1906,7 @@ function scroll(event) {
 }
 
 window.onmousemove = function (e) {
-    bmseed = fxrand() * idwn;
+    //bmseed = fxrand() * idwn;
 };
 
 let idwn = false;

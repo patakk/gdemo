@@ -432,10 +432,6 @@ void main() {
     }
     gl_FragColor = vec4(mixed.rgb, 1.0);
 
-    if(algo > .5){
-        gl_FragColor = vec4(vec3(1.-vUV.x), 1.0);
-        //gl_FragColor = vec4(vec3(0.), 1.0);
-    }
 
     float she = smoothstep(0.3, .7, fff(vUV.xy*vec2(1., 1.)*2.5+2.314*14.+seed*23.22 + 11.*vec2(oofx1, oofy1), 2.314+seed*3.42));
     she = map(she, 0., 1., .015, .05);
@@ -443,4 +439,10 @@ void main() {
 
     gl_FragColor = vec4(colors(mod(vUV.x+.1,1.)), didi);
     gl_FragColor = vec4(mixed.rgb*didi+(1.-didi)*(mixed.rgb*.5+.5), 1.);
+    
+    if(algo > .5){
+        gl_FragColor = vec4(vec3(1.-vUV.x), 1.0);
+        gl_FragColor = vec4(vec3(0., 0.5+.5*sin(vUV.x*2.*3.14*20.), 0.), 1.0);
+        gl_FragColor = vec4(vec3(1., vUV.x, vUV.y), 1.0);
+    }
 }

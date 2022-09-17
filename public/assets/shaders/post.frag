@@ -302,15 +302,20 @@ void main() {
     //texelB.z = texel.z + .2*(pp-texel.z);
     ff2 = 1.-pow(ff2, 3.);
     ff2 = .5+.5*ff2;
-    vec4 res = texel*.0 + texelBlur*(1.-.0) + .0*(-.5+rand(xy*.1+mod(ztime*.031, 2.0)));
+    vec4 res = texel*.07 + texelBlur*(1.-.07) + .0*(-.5+rand(xy*.1+mod(ztime*.031, 2.0)));
 
-    res = texelBlur;
     //res = mix(texel, texelBlur, .5+.5*smoothstep(0.0, .4, fff(uvm*3.2, 31.3112+seed1*21.3)));
+    res = texelBlur;
 
     float rat = resolution.x/resolution.y;
-    float margx = 9./1000. + 1./1000.*(-.5 + smoothstep(0., 1., fff(uv*182.1 + 281.3131,seed1+25.61 )));
-    float margy = 9./1000. + 1./1000.*(-.5 + smoothstep(0., 1., fff(uv*221.1 + 114.5255,seed1+35.12 )));
-    margy *= rat;
+    float margx = 7./1000. + 1./1000.*(-.5 + smoothstep(0., 1., fff(uv*182.1 + 281.3131,seed1+25.61 )));
+    float margy = 7./1000. + 1./1000.*(-.5 + smoothstep(0., 1., fff(uv*221.1 + 114.5255,seed1+35.12 )));
+    if(rat > 1.){
+        margy *= rat;
+    }
+    else if(rat < 1.){
+        margx /= rat;
+    }
     float margin = 1.0;
     float dd = 1. / 1000.;
     float smmth = 0.00;
@@ -331,11 +336,11 @@ void main() {
     
     float ffx = -1.+2.*fff(uv*vec2(1., 1.)*15.+seed1, 314.51+seed1);
     float ffy = -1.+2.*fff(uv*vec2(1., 1.)*15.+seed1, 22.44+seed1);
-    float salt5 = fff(uv*vec2(1., 1.)*24.+seed1*2.+9.9*vec2(ffx, ffy)+0.*randomNoise(uv+ztime/1000000.+.2143+ztime*.0000+fbm(uv)*.02), seed1);
+    float salt5 = fff(uv*vec2(1., 1.)*24.+seed1*2.+9.9*vec2(ffx, ffy)+ztime, seed1);
      salt5 = pow(smoothstep(.94, .999, salt5), 1.);
     salt5 = salt5;
     //res = .06 + res*(.94 - .06);
-    res.rgb += 1.175*(0.*.044*salt1 + .044*salt2 + 0.07*salt5);
+    res.rgb += 2.4*(0.*.044*salt1 + .044*salt2 + 0.01*salt5);
 
     float salt3 = 1.8*randomNoise(uv+ztime/1000000.+.2143+ztime*.0000+fbm(uv)*.02);
     salt3 = (smoothstep(.05,.22, salt3));
@@ -383,7 +388,6 @@ void main() {
     resr.r += bua*.2;
 
     vec4 mixdepth = bua*resr + (1.-bua)*res;
-
 
     
 
