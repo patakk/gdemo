@@ -53,7 +53,7 @@ function saturatecol([
     return [clerp.r, clerp.g, clerp.b];
 }
 
-function map2(ang) {
+function rybCol(ang) {
     var r = step2(ang);
     var g = step2(ang - 120 / 360);
     var b = step2(ang - 240 / 360);
@@ -212,4 +212,9 @@ function mixsubcol(c1, c2, p) {
     cd = 4 * p * (1. - p) * cd;
 
     return mixcollin(mixcollin(c1, c2, p), f, cd);
+}
+
+
+module.exports = {
+    rybCol
 }

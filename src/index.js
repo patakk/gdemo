@@ -11,186 +11,451 @@ import {mergeBufferGeometries} from 'three/examples/jsm/utils/BufferGeometryUtil
 import {FXAAShader} from 'three/examples/jsm/shaders/FXAAShader.js';
 import {OrbitControls} from 'three/examples/jsm/controls/OrbitControls.js';
 
-const hobbylib = require("./hobby");
-let makeknots = hobbylib.makeknots;
-let gethobbypoints = hobbylib.gethobbypoints;
+let scene;
+let camera;
+let realCamera;
+let renderer;
+let camcontrols;
+let composer;
 
-let myVec = require("./myvec");
-let pixelRatio = 2;
+let displayTarget;
 
-let iterationCount = 0;
+let display;
 
-const PostProcShader = {
+
+const rybCol = require("./artcolors").rybCol;
+const noise = require("./noise").noise;
+
+function map(v, v1, v2, v3, v4){
+    return (v-v1)/(v2-v1)*(v4-v3)+v3;
+}
+
+
+let baseMaterial = new THREE.ShaderMaterial({
+    lights: true,
+    side: THREE.DoubleSide,
     uniforms: {
-        'tDiffuse': {
-            value: null
+        ...THREE.UniformsLib.lights,
+        color: {
+            value: new THREE.Color(...rybCol(Math.pow(fxrand(), 1)))
         },
-        'tDiffuse2': {
-            value: null
+        color2: {
+            value: new THREE.Color(...rybCol(Math.pow(fxrand(), 1)))
         },
-        'tDiffuse3': {
-            value: null
+        resolution: {
+            value: [100, 100]
         },
-        'tDiffuse4': {
-            value: null
-        },
-        'resolution': {
-            value: [500, 500]
-        },
-        'ztime': {
+        seed: {
             value: fxrand()
         },
-        'flip': {
-            value: map(fxrand(), 0, 1, 0, 4)
-        },
-        'seed1': {
-            value: map(fxrand(), 0, 1, .9, 1.1)
-        },
-        'seed2': {
-            value: map(fxrand(), 0, 1, .5, 1.5)
-        },
-        'seed3': {
-            value: map(fxrand(), 0, 1, .5, 1.5)
-        },
-        'color': {
-            value: [1,0,0]
+        cameraPos: {
+            value: [0,0,0]
         }
     },
-    vertexShader: null,
-    fragmentShader: null
-};
+    vertexShader: `
+        #include <common>
+        #include <shadowmap_pars_vertex>
 
-const BlurShader = {
+        attribute vec4 color;
+
+        varying vec3 vNormal;
+        varying vec3 vViewDir;
+        varying vec4 vColor;
+        varying vec2 vUV;
+        varying vec4 modelPos;
+        varying vec3 vWNormal;
+
+
+        void main() {
+            #include <beginnormal_vertex>
+            #include <defaultnormal_vertex>
+
+            #include <begin_vertex>
+
+            #include <worldpos_vertex>
+            #include <shadowmap_vertex>
+
+            vec4 modelPosition = modelMatrix * vec4(position, 1.0);
+            vec4 viewPosition = viewMatrix * modelPosition;
+            vec4 clipPosition = projectionMatrix * viewPosition;
+
+            vNormal = normalize(normalMatrix * normal);
+            vViewDir = normalize(-viewPosition.xyz);
+            vColor = color;
+            vUV.xy = uv.xy;
+            modelPos = modelPosition;
+            vWNormal = normal;
+
+            gl_Position = clipPosition;
+
+        }`
+    ,
+    fragmentShader: `
+        #include <common>
+        #include <packing>
+        #include <lights_pars_begin>
+        #include <shadowmap_pars_fragment>
+        #include <shadowmask_pars_fragment>
+
+        uniform vec3 color;
+        uniform vec3 color2;
+        uniform vec2 resolution;
+        uniform float seed;
+
+        varying vec3 vNormal;
+        varying vec3 vWNormal;
+        varying vec3 vViewDir;
+        varying vec4 vColor;
+        varying vec2 vUV;
+        varying vec4 modelPos;
+
+        uniform vec3 cameraPos;
+
+        const float pi = 3.14159265f;
+        const float numBlurPixelsPerSide = 4.0f;
+
+        float power(float p, float g) {
+            if (p < 0.5)
+                return 0.5 * pow(2.*p, g);
+            else
+                return 1. - 0.5 * pow(2.*(1. - p), g);
+        }
+        
+        float hash13(vec3 p3)
+        {
+            p3  = fract(p3 * .1031);
+            p3 += dot(p3, p3.zyx + 31.32);
+            return fract((p3.x + p3.y) * p3.z);
+        }
+
+        void main() {
+            // shadow map
+            DirectionalLightShadow directionalLight = directionalLightShadows[0];
+
+            float shadow = getShadow(
+                directionalShadowMap[0],
+                directionalLight.shadowMapSize,
+                directionalLight.shadowBias,
+                directionalLight.shadowRadius,
+                vDirectionalShadowCoord[0]
+            );
+            shadow = smoothstep(.1, .2, shadow);
+
+            // float NdotL = dot(vNormal, directionalLights[0].direction);
+            // float lightIntensity = smoothstep(0.0, 0.01, NdotL * 1.);
+            // vec3 light = directionalLights[0].color * lightIntensity;
+
+            // vec3 halfVector = normalize(directionalLights[0].direction + vViewDir);
+            // float NdotH = dot(vNormal, halfVector);
+
+            // float specularIntensity = pow(NdotH * lightIntensity, uGlossiness * uGlossiness);
+            // float specularIntensitySmooth = smoothstep(0.05, 0.1, specularIntensity);
+
+            // vec3 specular = specularIntensitySmooth * directionalLights[0].color;
+
+            // float rimDot = 1.0 - dot(vViewDir, vNormal);
+            // float rimAmount = 0.6;
+
+            // float rimThreshold = 0.2;
+            // float rimIntensity = rimDot * pow(NdotL, rimThreshold);
+            // rimIntensity = smoothstep(rimAmount - 0.01, rimAmount + 0.01, rimIntensity);
+
+            // vec3 rim = rimIntensity * directionalLights[0].color;
+            shadow = .5 + .5*shadow;
+
+            vec3 scolor = color;
+
+            float fac = 1.;
+            if(vWNormal.y < .5){
+                fac = (.6+.4*vUV.y);
+                scolor = mix(mix(color, vec3(1.), .0), color2, vUV.y + .0*hash13(vec3(vUV.xy*1000., 1.)));
+            }
+            if(modelPos.y < .06){
+                scolor = vec3(1.,0.,0.);
+            }
+
+            scolor = scolor*shadow + vec3(.7,0.,0.)*(1.-shadow);
+
+            scolor = scolor * fac;
+            vec3 outcolor = scolor*1.1;
+
+            float aa = length(cameraPos)*3.;
+            float toCam = length(cameraPos - modelPos.xyz)/aa;
+            vec3 fog = mix(scolor, vec3(.2, .2, .3), smoothstep(.0, .4, toCam));
+
+            gl_FragColor = vec4(vec3(vWNormal.xyz), 1.0);
+            gl_FragColor = vec4(outcolor, 1.0);
+            gl_FragColor = vec4(vec3(toCam), 1.0);
+            gl_FragColor = vec4(fog, 1.0);
+
+        }`
+    ,
+    transparent: true,
+});
+
+let cx = 0;
+let cy = 0;
+let cz = 0;
+
+let displayMaterial = new THREE.ShaderMaterial({
     uniforms: {
-        'tDiffuse': {
+        'sceneRender': {
             value: null
         },
-        'dmap': {
-            value: null
+        color: {
+            value: new THREE.Color(...rybCol(Math.pow(fxrand(), 1)))
         },
-        'amp': {
-            value: 1.
+        resolution: {
+            value: [100, 100]
         },
-        'seed': {
+        seed: {
             value: fxrand()
-        },
-        'resolution': {
-            value: [500, 500]
-        },
-        'uDir': {
-            value: [1, 0]
-        },
+        }
     },
-    vertexShader: null,
-    fragmentShader: null
-};
+    vertexShader: `
+        varying vec3 vUV; 
 
-function shuffle(array) {
-    let currentIndex = array.length
-    var randomIndex;
+        void main() {
+            vUV = uv.xyx; 
+            vUV.xy = vUV.xy;
+            vUV = vUV;
 
-    // While there remain elements to shuffle.
-    while (currentIndex != 0) {
+            vec4 modelViewPosition = modelViewMatrix * vec4(position, 1.0);
+            gl_Position = projectionMatrix * modelViewPosition; 
+        }
+    `,
+    fragmentShader: `
+        uniform vec3 colorA; 
+        uniform vec3 colorB; 
+        varying vec3 vUV;
+        uniform sampler2D sceneRender;
+        uniform float seed;
+        
+        
+        float hash13(vec3 p3)
+        {
+            p3  = fract(p3 * .1031);
+            p3 += dot(p3, p3.zyx + 31.32);
+            return fract((p3.x + p3.y) * p3.z);
+        }
 
-        // Pick a remaining element.
-        randomIndex = Math.floor(fxrand() * currentIndex);
-        currentIndex--;
+        vec3 rgb2hsv(vec3 c)
+        {
+            vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+            vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+            vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+        
+            float d = q.x - min(q.w, q.y);
+            float e = 1.0e-10;
+            return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+        }
+        
+        float power(float p, float g) {
+            if (p < 0.5)
+                return 0.5 * pow(2.*p, g);
+            else
+                return 1. - 0.5 * pow(2.*(1. - p), g);
+        }
 
-        // And swap it with the current element.
-        [
-            array[currentIndex], array[randomIndex]
-        ] = [
-            array[randomIndex], array[currentIndex]
-        ];
+        vec3 hsv2rgb(vec3 c)
+        {
+            vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+            vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+            return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+        }
+        
+        
+        float aspect = 1.0;
+        float distortion = 0.14;
+        float radius = 1.0;
+        float alpha = 1.0;
+        float crop = 1.0;
+        vec2 distort(vec2 p)
+        {
+            p = p - .5;
+            float d = length(p);
+            float z = sqrt(distortion + d * d * -distortion);
+            float r = d*d/atan(d, z) / 3.1415926535 * 6.;
+            float phi = atan(p.y, p.x);
+            return (vec2(r * cos(phi) * (1.0 / aspect), r * sin(phi))+.5)*.05 + .95*(p+.5);
+        }
+
+        void main() {
+
+            vec2 uv = gl_FragCoord.xy;
+            float freq = 300.;
+
+            float scanlinesx = .5 + .5*cos(vUV.x*3.14*freq);
+            float scanlinesy = .5 + .5*cos(vUV.y*3.14*freq);
+            scanlinesx = .95 + (1.-.95)*scanlinesx;
+            scanlinesy = .95 + (1.-.95)*scanlinesy;
+            float scanlines = scanlinesx * scanlinesy;
+
+            float vignette = pow(length(vUV.xy-.5)/sqrt(.5), 3.);
+
+            vec2 distorted = distort(vUV.xy);
+
+            // vum.x = floor(vUV.x*(freq))/(freq);
+            // vum.y = floor(vUV.y*freq)/freq;
+            // vec2 vumq = vum;
+
+            // vum = (vUV.xy - vum)*freq;
+            // vum.x = power(vum.x*.99+.001, 3.4);
+            // vum.y = power(vum.y*.99+.001, 3.4);
+            // vum = vum/freq + vumq;
+            // float vd = length(vum.xy);
+            // float ang = atan(vum.y, vum.x);
+            // float sqrt5 = sqrt(.5);
+            // vd = pow(vd/sqrt5, 1.33)*sqrt5;
+            // vum.x = vd*cos(ang);
+            // vum.y = vd*sin(ang);
+            // vum = vum + .5;
+
+            vec2 vum = distorted;
+
+            vec3 res0 = texture2D(sceneRender, vum.xy).rgb;
+
+            vec3 resr = texture2D(sceneRender, vum.xy + 1./555.*vec2(+1., 0.) + res0.r*0./555.*hash13(vec3(vUV.xy*200., seed))).rgb;
+            vec3 resg = texture2D(sceneRender, vum.xy + 1./555.*vec2( 0., 0.)).rgb;
+            vec3 resb = texture2D(sceneRender, vum.xy + 1./555.*vec2(-1., 0.)).rgb;
+            vec3 res = vec3(resr.r, resg.g, resb.b);
+
+            res = rgb2hsv(res);
+            res.g *= .65;
+            res.b = power(res.b, 3.);
+            res = hsv2rgb(res);
+            res = mix(res, vec3(0.,0.4,1.), .1);
+             res = res * scanlines;
+
+            res = res + vignette*.4;
+
+            res += .025*(-.1 + 2.*hash13(vec3(uv, seed)));
+
+            gl_FragColor = vec4(res.rgb, 1.0);
+            // gl_FragColor = vec4(vec3(distorted.x, distorted.y, 0.), 1.0);
+        }
+    `,
+});
+
+let bgColor = new THREE.Color(...rybCol(.5+.1*fxrand()));
+bgColor.offsetHSL(0,-.0,-.25);
+bgColor = new THREE.Color(.05,.05,.05) 
+bgColor = new THREE.Color(.2, .2, .3) 
+
+function setup(){
+    scene = new THREE.Scene();
+    scene.background = bgColor;
+    camera = new THREE.PerspectiveCamera( 55, window.innerWidth / window.innerHeight, 0.1, 1000 );
+    realCamera = new THREE.PerspectiveCamera( 44, 4/3, 0.01, 1000 );
+    
+    renderer = new THREE.WebGLRenderer({antialias: true});
+    renderer.setSize( window.innerWidth, window.innerHeight );
+    renderer.setPixelRatio( window.devicePixelRatio );
+    document.body.appendChild( renderer.domElement );
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap; // default THREE.PCFShadowMap
+
+
+    window.addEventListener( 'resize', onWindowResize );
+    displayTarget = new THREE.WebGLRenderTarget(1000, 700);
+
+
+    composer = new EffectComposer( renderer );
+
+
+    for(let k = 0; k < 7; k++){
+
+        let x = map(fxrand(), 0, 1, -10, 10);
+        let z = map(fxrand(), 0, 1, -10, 10);
+        let w = map(fxrand(), 0, 1, 1, 4);
+        let d = map(fxrand(), 0, 1, 1, 4);
+        let h = map(fxrand(), 0, 1, 1, 14);
+
+        let geometry = new THREE.BoxGeometry( w, h, d );
+
+        // var uvAttribute = geometry.attributes.uv;
+        // geometry.attributes.uv.name = "uvs";
+        // console.log(uvAttribute)
+        // for ( var i = 0; i < uvAttribute.count; i ++ ) {
+        //     var u = uvAttribute.getX( i );
+        //     var v = uvAttribute.getY( i );
+        //     uvAttribute.setXY( i, u, v );
+        // }
+
+        let material = baseMaterial.clone();
+        material.uniforms.color.value = rybCol(Math.pow(fxrand(), 3));
+        material.uniforms.color2.value = rybCol(Math.pow(fxrand(), 1));
+        let cube = new THREE.Mesh( geometry, material );
+        cube.castShadow = true;
+        cube.receiveShadow = true;
+        cube.position.x = x;
+        cube.position.z = z;
+        cube.position.y = h/2;
+        objects.push(cube);
+        scene.add( cube );
     }
 
-    return array;
+    setupFloor();
+    
+    setupDisplay();
+
+    addLight();
+
+    setupCam();
+
+    let renderPass = new RenderPass( scene, camera );
+    composer.addPass( renderPass );
+
+    
+    let fxaaPass = new ShaderPass( FXAAShader );
+    fxaaPass.material.uniforms[ 'resolution' ].value.x = 1 / ( window.innerWidth * window.devicePixelRatio );
+    fxaaPass.material.uniforms[ 'resolution' ].value.y = 1 / ( window.innerHeight * window.devicePixelRatio );
+    composer.addPass( fxaaPass );
+    
 }
 
-let rawCamera,
-    scene,
-    renderer,
-    renderer2,
-    rawTarget,
-    depthTarget,
-    smudgeTarget,
-    smudgeTargetH,
-    smudgeTargetV,
-    composer;
-var bvShader,
-    bfShader;
-var svShader,
-    sfShader;
-var loaded = false;
-var orbitcontrols;
-
-var points;
-var ress = 1666;
-var baseWidth = 1;
-var baseHeight = 1;
-var canvasWidth = 1;
-var canvasHeight = 1;
-var winScale = 1.;
-var pg;
-var canvas;
-var paletteCanvas;
-
-var isdown = false;
-
-var coshu = 1;
-
-var seed = fxrand() * 10000;
-
-var wind = 0.0;
-var scrollscale = 1.3;
-var globalIndex = 0;
-var frameCount = 0;
-var particlePositions = [];
-var particleColors = [];
-var particleSizes = [];
-var particleAngles = [];
-var particleIndices = [];
-
-var horizon = map(fxrand(), 0, 1, 0.7, 0.93);
-
-var treeGroundSpread;
-
-var sunPos;
-var sunColor;
-var sunSpread;
-var isDark;
-var hasSun;
-
-var colorful = fxrand() < .6;
-var verycolorful = fxrand() < .25;
-
-function getColorString(colorful, verycolorful) {
-    if (verycolorful) {
-        return 'total color';
-    } else {
-        if (colorful) {
-            return 'harmonic'
-        } else {
-            return 'solid'
-        }
-    }
+function onWindowResize(){
+    // window.cancelAnimationFrame(true);
+    // setup();
+    // animate();
 }
 
-window.$fxhashFeatures = {
-    "variant": getColorString(colorful, verycolorful)
+function repositionCanvas(canvas) {
+    
 }
 
-var backgroundColor;
+function setupDisplay(){
+    
+    let displayGeo = new THREE.PlaneGeometry( 4/40.5, 3/40.5 );
+    display = new THREE.Mesh( displayGeo, displayMaterial );
+    scene.add( display )
+}
 
-function isMobile() {
-    let check = false;
-    (function (a) {
-        if (/(android|bb\d+|meego).+mobile|avantgo|bada\/|blackberry|blazer|compal|elaine|fennec|hiptop|iemobile|ip(hone|od)|iris|kindle|lge |maemo|midp|mmp|mobile.+firefox|netfront|opera m(ob|in)i|palm( os)?|phone|p(ixi|re)\/|plucker|pocket|psp|series(4|6)0|symbian|treo|up\.(browser|link)|vodafone|wap|windows ce|xda|xiino/i.test(a) || /1207|6310|6590|3gso|4thp|50[1-6]i|770s|802s|a wa|abac|ac(er|oo|s\-)|ai(ko|rn)|al(av|ca|co)|amoi|an(ex|ny|yw)|aptu|ar(ch|go)|as(te|us)|attw|au(di|\-m|r |s )|avan|be(ck|ll|nq)|bi(lb|rd)|bl(ac|az)|br(e|v)w|bumb|bw\-(n|u)|c55\/|capi|ccwa|cdm\-|cell|chtm|cldc|cmd\-|co(mp|nd)|craw|da(it|ll|ng)|dbte|dc\-s|devi|dica|dmob|do(c|p)o|ds(12|\-d)|el(49|ai)|em(l2|ul)|er(ic|k0)|esl8|ez([4-7]0|os|wa|ze)|fetc|fly(\-|_)|g1 u|g560|gene|gf\-5|g\-mo|go(\.w|od)|gr(ad|un)|haie|hcit|hd\-(m|p|t)|hei\-|hi(pt|ta)|hp( i|ip)|hs\-c|ht(c(\-| |_|a|g|p|s|t)|tp)|hu(aw|tc)|i\-(20|go|ma)|i230|iac( |\-|\/)|ibro|idea|ig01|ikom|im1k|inno|ipaq|iris|ja(t|v)a|jbro|jemu|jigs|kddi|keji|kgt( |\/)|klon|kpt |kwc\-|kyo(c|k)|le(no|xi)|lg( g|\/(k|l|u)|50|54|\-[a-w])|libw|lynx|m1\-w|m3ga|m50\/|ma(te|ui|xo)|mc(01|21|ca)|m\-cr|me(rc|ri)|mi(o8|oa|ts)|mmef|mo(01|02|bi|de|do|t(\-| |o|v)|zz)|mt(50|p1|v )|mwbp|mywa|n10[0-2]|n20[2-3]|n30(0|2)|n50(0|2|5)|n7(0(0|1)|10)|ne((c|m)\-|on|tf|wf|wg|wt)|nok(6|i)|nzph|o2im|op(ti|wv)|oran|owg1|p800|pan(a|d|t)|pdxg|pg(13|\-([1-8]|c))|phil|pire|pl(ay|uc)|pn\-2|po(ck|rt|se)|prox|psio|pt\-g|qa\-a|qc(07|12|21|32|60|\-[2-7]|i\-)|qtek|r380|r600|raks|rim9|ro(ve|zo)|s55\/|sa(ge|ma|mm|ms|ny|va)|sc(01|h\-|oo|p\-)|sdk\/|se(c(\-|0|1)|47|mc|nd|ri)|sgh\-|shar|sie(\-|m)|sk\-0|sl(45|id)|sm(al|ar|b3|it|t5)|so(ft|ny)|sp(01|h\-|v\-|v )|sy(01|mb)|t2(18|50)|t6(00|10|18)|ta(gt|lk)|tcl\-|tdg\-|tel(i|m)|tim\-|t\-mo|to(pl|sh)|ts(70|m\-|m3|m5)|tx\-9|up(\.b|g1|si)|utst|v400|v750|veri|vi(rg|te)|vk(40|5[0-3]|\-v)|vm40|voda|vulc|vx(52|53|60|61|70|80|81|83|85|98)|w3c(\-| )|webc|whit|wi(g |nc|nw)|wmlb|wonu|x700|yas\-|your|zeto|zte\-/i.test(a.substr(0, 4))) 
-            check = true;
-        }
-    )(navigator.userAgent || navigator.vendor || window.opera);
-    return check;
-};
+let objects = [];
+
+function setupFloor(){
+    let planeGeometry = new THREE.BoxGeometry( 27, .1, 27 );
+    planeGeometry.computeVertexNormals();
+    let planeMaterial = baseMaterial.clone();
+    planeMaterial.uniforms.color.value = rybCol(Math.pow(fxrand(), 3));
+    let plane = new THREE.Mesh( planeGeometry, planeMaterial );
+    plane.receiveShadow = true;
+    plane.castShadow = true;
+    objects.push(plane);
+    scene.add( plane )
+}
+
+function setupCam(){
+    cx = 25;
+    cy = 25;
+    cz = 25;
+    camera.position.x = cx;
+    camera.position.y = cy;
+    camera.position.y = cz;
+    
+    camcontrols = new OrbitControls( camera, renderer.domElement );
+    camcontrols.update();
+}
 
 function power(p, g) {
     if (p < 0.5) 
@@ -199,2344 +464,87 @@ function power(p, g) {
         return 1 - 0.5 * Math.pow(2 * (1 - p), g);
 }
 
-function dist(x1, y1, x2, y2) {
-    return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
-}
 
-var mouse = {
-    'x': 0,
-    'y': 0
-};
-
-var mouseprev = {
-    'x': 0,
-    'y': 0
-};
-
-function lerp(v1, v2, p) {
-    return v1 + p * (v2 - v1);
-}
-
-function getHorizon(x) {
-    var dispr = .5 * baseHeight * (-.5 * power(noise(x * 0.003 + 3133.41), 3))
-    return baseHeight * horizon + (1. - horizon * .8) * .6 * baseHeight * (
-        -.5 * power(noise(x * 0.003), 2)
-    ) + .0 * dispr * fxrand();
-}
-
-function map(x, v1, v2, v3, v4) {
-    return (x - v1) / (v2 - v1) * (v4 - v3) + v3;
-}
-
-function max(x, y) {
-    if (x >= y) 
-        return x;
-    return y;
-}
-
-function min(x, y) {
-    if (x <= y) 
-        return x;
-    return y;
-}
-
-function constrain(x, a, b) {
-    return max(a, min(x, b));
-}
-
-var loader = new THREE.FileLoader();
-loader.load('assets/shaders/post.vert', function (data) {
-    PostProcShader.vertexShader = data;
-
-    loader.load('assets/shaders/post.frag', function (data) {
-        PostProcShader.fragmentShader = data;
-        
-        loader.load('assets/shaders/smudge.vert', function (data) {
-            BlurShader.vertexShader = data;
-            
-            loader.load('assets/shaders/smudge.frag', function (data) {
-                BlurShader.fragmentShader = data;
-                reset();
-            });
-        });
-    });
-});
-
-var palettes0 = [
-    'f4c7a4-e8e1ef-d9fff8-c7ffda-c4f4c7-9bb291',
-    'f46036-5b85aa-414770-372248',
-    '084c61-db504a-e3b505-4f6d7a-56a3a6',
-    '177e89-084c61-db3a34-ffc857-323031',
-    '32373b-4a5859-f4d6cc-f4b860-c83e4d',
-    'c0caad-9da9a0-654c4f-b26e63-cec075',
-    'ac80a0-89aae6-3685b5-0471a6-061826',
-    'fbf5f3-e28413-de3c4b-c42847',
-    'dceed1-aac0aa-736372-a18276-7a918d',
-    '12355b-420039-d72638-ff570a',
-    '555b6e-89b0ae-bee3db-faf9f9-ffd6ba',
-    'de6b48-e5b181-f4b9b2-daedbd-7dbbc3',
-    'f55d3e-878e88-f7cb15-76bed0',
-    'fe5f55-f0b67f-d6d1b1-c7efcf-eef5db',
-    'bfb48f-564e58-904e55-f2efe9-252627',
-    'ba1200-031927-9dd1f1-508aa8-c8e0f4',
-    'ffbc42-df1129-bf2d16-218380-73d2de',
-    '1f363d-40798c-70a9a1-9ec1a3-cfe0c3',
-    'fa8334-fffd77-ffe882-388697-54405f',
-    'ed6a5a-f4f1bb-9bc1bc-e6ebe0-36c9c6',
-    '3e5641-a24936-d36135-282b28-83bca9',
-    '664c43-873d48-dc758f-e3d3e4-00ffcd',
-    '013a63-01497c-014f86-2a6f97-2c7da0-468faf-61a5c2-fa1603',
-    '304d7d-db995a-bbbbbb-222222-fdc300',
-    '8789c0-45f0df-c2cae8-8380b6-111d4a',
-    '006466-065a60-fb525b-144552-1b3a4b-212f45-272640-fb525b-312244-3e1f47-4d194d',
-    '003844-006c67-f194b4-ffb100-ffebc6',
-    '4d5057-4e6e5d-4da167-3bc14a-cfcfcf',
-    '007f5f-2b9348-55a630-80b918-aacc00-bfd200-d4d700-dddf00-eeef20-cf3311',
-    '5fad56-f2c14e-f78154-4d9078-b4431c'
-]
-
-var palettesy = ['007f5f-2b9348-55a630-80b918-aacc00-bfd200-d4d700-dddf00-eeef20-cf3311']
-
-var palettesx = ['c0caad-9da9a0-654c4f-b26e63-cec075-084c61-db504a-e3b505-f4c7a4-e8e1ef-d9fff8-6' +
-        '64c43-873d48-dc758f-e3d3e4-00ffcd-c7ffda-c4f4c7-9bb291-3e5641-a24936-d36135-28' +
-        '2b28-83bca9-4f6d7a-56a3a6-32373b-4a5859-f4d6cc-f4b860-c83e4d-ba1200-031927-9dd' +
-        '1f1-508aa8-c8e0f4-b84527-d2a467-e2af51-714c04-1f3c36-88beb6-4e2649-39160e-9527' +
-        '09-975341-ffbc42-df1129-bf2d16-218380-73d2de']
-
-// if(verycolorful)     palettes0 = palettesx;
-
-var palettesstrings = [
-    'f3db53-f19ba6-a08a7f-d50a15-3c71ec-f3dd56-d40b16-3c6cf0-f19ba6-a08a7f', '111111-222222-333333-444444-555555-666666-777777-888888-999999-aaaaaa-bbbbbb', 'f46036-5b85aa-414770-372248-f55d3e-878e88-f7cb15-76bed0-9cfffa-acf39d-b0c592-a' +
-            '97c73-af3e4d',
-    '121212-F05454-30475E-F5F5F5-F39189-BB8082-6E7582-046582',
-    '084c61-db504a-e3b505-4f6d7a-56a3a6-177e89-084c61-db3a34-ffc857-323031',
-    '32373b-4a5859-f4d6cc-f4b860-c83e4d-de6b48-e5b181-f4b9b2-daedbd-7dbbc3',
-    '3e5641-a24936-d36135-282b28-83bca9-ed6a5a-f4f1bb-9bc1bc-e6ebe0-36c9c6',
-    '304d7d-db995a-bbbbbb-222222-fdc300-664c43-873d48-dc758f-e3d3e4-00ffcd',
-    '5fad56-f2c14e-f78154-4d9078-b4431c-8789c0-45f0df-c2cae8-8380b6-111d4a',
-    '4C3A51-774360-B25068-FACB79-dddddd-2FC4B2-12947F-E71414-F17808-Ff4828',
-    '087e8b-ff5a5f-3c3c3c-f5f5f5-c1839f-1B2430-51557E-816797-D6D5A8-ff2222',
-    '4C3F61-B958A5-9145B6-FF5677-65799B-C98B70-EB5353-394359-F9D923-36AE7C-368E7C-1' +
-            '87498',
-    '99e2b4-99d4e2-f94144-f3722c-f8961e-f9844a-f9c74f-90be6d-43aa8b-4d908e-577590-2' +
-            '77da1',
-    '080708-3772ff-df2935-fdca40-e6e8e6-d8dbe2-a9bcd0-58a4b0-373f51-1b1b1e',
-    '001219-005f73-0a9396-94d2bd-e9d8a6-ee9b00-ca6702-bb3e03-ae2012-9b2226',
-    '5f0f40-9a031e-fb8b24-e36414-0f4c5c',
-    '264653-2a9d8f-e9c46a-f4a261-e76f51',
-    'd8f3dc-b7e4c7-95d5b2-74c69d-52b788-40916c-2d6a4f-1b4332-081c15',
-    '03071e-370617-6a040f-9d0208-d00000-dc2f02-e85d04-f48c06-faa307-ffba08',
-    '1a1423-372549-774c60-b75d69-eacdc2',
-    '383b36-26408f-00b0fa-297d45-bf1f2e',
-    'f75c03-d90368-820263-291720-04a777',
-    '1655c9-f505a5-e3980e-e6b967-93a8cf-d6cdc7-6f8695-1c448e',
-    '0a0a0a-1f1f1f-220001-47030a-6b020a-7e030e-89010c-00858f-f7f4f3-dad6d6',
-    '054a91-3e7cb1-81a4cd-dbe4ee-f17300',
-    '000000-2f4550-586f7c-b8dbd9-f4f4f9',
-    '023c40-ff0a47-00aac0-00ee7b-fbb000',
-    '8b85c1-59a96a-ef3054-5c5552-42cafd',
-    '090427-2804c8-c91b18-788a91-373f43',
-    'dc3000-83250b-45070a-59565d-fa6302',
-    '283d3b-197278-edddd4-c44536-772e25-0d3b66-faf0ca-f4d35e-ee964b-f95738',
-    'fe5d26-f2c078-faedca-c1dbb3-7ebc89-3d5a80-98c1d9-e0fbfc-ee6c4d-293241'
-];
-
-let smudgeCamera;
-let smudgeScene;
-let smudgeGeometry;
-let smudgeMaterial;
-let smudgeMesh;
-let postprocCamera;
-let postprocScene;
-let postprocGeometry;
-let postprocMaterial;
-let postprocMesh;
-
-//   palettesstrings = [
-//     '264653-2a9d8f-e9c46a-f4a261-e76f51-f3db53-f19ba6-a08a7f-d50a15-3c71ec-f3dd56-d40b16-3c6cf0-f19ba6-a08a7f-111111-222222-333333-444444-555555-666666-777777-888888-999999-aaaaaa-bbbbbb', 'f46036-5b85aa-414770-372248-f55d3e-878e88-f7cb15-76bed0-9cfffa-acf39d-b0c592-a' +
-//     '97c73-af3e4d-054a91-3e7cb1-81a4cd-dbe4ee-f17300-8b85c1-59a96a-ef3054-5c5552-42cafd-4C3A51-774360-B25068-FACB79-dddddd-2FC4B2-12947F-E71414-F17808-Ff4828-283d3b-197278-edddd4-c44536-772e25-0d3b66-faf0ca-f4d35e-ee964b-f95738',
-//  ];
-
-palettes0 = palettesstrings;
-
-var palettes = [];
-palettes0.forEach(element => {
-    palettes.push(element);
-});
-
-function hexToRgb(hex) {
-    var result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    return result
-        ? [
-            parseInt(result[1], 16) / 255.,
-            parseInt(result[2], 16) / 255.,
-            parseInt(result[3], 16) / 255.
-        ]
-        : null;
-}
-
-for (var k = 0; k < palettes.length; k++) {
-    let text = palettes[k];
-    let cols = text.split('-')
-    let caca = [];
-    cols.forEach((e) => {
-        caca.push(hexToRgb(e))
-    });
-    shuffle(caca)
-    var coco = [];
-    caca.forEach((e, i) => {
-        coco.push([
-            (caca[i][0] + .03 * map(fxrand(), 0, 1, -.2, .2)),
-            (caca[i][1] + .03 * map(fxrand(), 0, 1, -.2, .2)),
-            (caca[i][2] + .03 * map(fxrand(), 0, 1, -.2, .2))
-        ])
-    });
-    palettes[k] = coco;
-}
-
-function getShaderPalette(){
-    let s = '';
-
-    //let palette = palettes[Math.floor(fxrand()*palettes.length)]
-    let palette = palettes[Math.floor(fxrand()*palettes.length)]
-    for(let k = 0; k < palette.length; k++){
-        s = s + `gWeights[${k}] = vec3(${palette[k][0]}, ${palette[k][1]}, ${palette[k][2]});\n`;
-        s = s + '\n';
-    }
-    s = s + `gWeights[${palette.length}] = vec3(${palette[0][0]}, ${palette[0][1]}, ${palette[0][2]});\n`;
-
-    return {palette: s, len: palette.length+1};
-}
-
-function getRandomColor() {
-    pp = fxrand();
-    //let pp = Math.pow(fxrand(), 3);
-    return palette[Math.floor(palette.length * pp)];
-}
-
-function getIn(k) {
-    k = k % 1.;
-    k = power(k, 2.);
-    let pale = palette;
-    let dd = pale.length - 1;
-    let pa = 1. / dd;
-    let idx1 = Math.floor(k / pa);
-    let idx2 = (idx1 + 1) % dd;
-    var pe = (k - idx1 * pa) / pa;
-    var rr = map(pe, 0, 1, pale[idx1][0], pale[idx2][0]);
-    var gg = map(pe, 0, 1, pale[idx1][1], pale[idx2][1]);
-    var bb = map(pe, 0, 1, pale[idx1][2], pale[idx2][2]);
-    return [rr, gg, bb];
-}
-
-var palette;
-let omx, omy;
-
-function reset() {
-    iterationCount++;
-
-    ttime = 0
-    var thidx = Math.floor(map(fxrand(), 0, 1, 0, palettes.length));
-    palette = palettes[thidx]
-    shuffle(palette)
-    console.log('palette:', palettesstrings[thidx]);
-
-    var ns = map(fxrand(), 0, 1, 0, 100000);
-    noiseSeed(ns);
-    globalIndex = 0;
-    scrollscale = 1.3;
-    frameCount = 0;
-    seed = fxrand() * 10000;
-
-    canvasWidth = ress;
-    canvasHeight = ress;
-
-    var ww = window.innerWidth || canvas.clientWidth || body.clientWidth;
-    var wh = window.innerHeight || canvas.clientHeight || body.clientHeight;
-
-    baseWidth = ress - 0;
-    baseHeight = ress - 0;
-
-    var mm = min(ww, wh);
-    winScale = mm / baseWidth;
-
-    omx = 1.;
-    omy = 1.;
-    if(fxrand() < .66){
-        if(fxrand() < .5){
-            omx = .75;
-            omy = 1.;
-        }
-        else{
-            omx = 1.;
-            omy = .75;
-        }
-    }
-    omx = .75;
-    omy = 1.;
-
-    if (ww < ress + 16 || wh < ress + 16 || true) {
-        canvasWidth = mm * omx- 133 * mm / ress;
-        canvasHeight = mm * omy - 133 * mm / ress;
-        //baseWidth = mm-16-16; baseHeight = mm-16-16;
-    }
-
-    ww = canvasWidth
-    wh = canvasHeight
-
-    let sxx = map(fxrand(), 0, 1, 0.05, 0.95);
-    sunPos = [
-        sxx,
-        getHorizon(sxx * baseWidth) / baseHeight + map(fxrand(), 0, 1, -.0, .1)
-    ];
-    sunSpread = map(fxrand(), 0, 1, 1.85, 1.85);
-
-    var hsv = [
-        Math.pow(map(fxrand(), 0, 1, 0.0, 0.9), 2),
-        map(fxrand(), 0, 1, 0.2, 0.56),
-        map(fxrand(), 0, 1, 0.3, 0.76)
-    ]
-    if (hsv[0] > 0.05) {
-        hsv[1] = map(fxrand(), 0, 1, 0.14, 0.315)
-        //hsv[2] = map(fxrand(), 0, 1, 0.2, 0.8)
-    }
-    if (sunPos[1] > horizon) {
-        //hsv[2] = map(fxrand(), 0, 1, 0.4, 0.7)
-    }
-
-    if (isDark) {
-        hsv[2] *= .5;
-    }
-
-    backgroundColor = HSLtoRGB(hsv[0], hsv[1], hsv[2])
-
-    // while(myDot(backgroundColor, [0,1,0]) > 0.5){    hsv = [Math.pow(fxrand()*.5,
-    // 2), map(fxrand(), 0, 1, 0.2, 0.36), map(fxrand(), 0, 1, 0.5, 0.7)]
-    // backgroundColor = HSVtoRGB(hsv[0], hsv[1], hsv[2]) } backgroundColor[2] =
-    // Math.pow(backgroundColor[2], .6)
-
-    sunColor = [
-        map(fxrand(), 0, 1, 0.992, 1.036) % 1.0,
-        map(fxrand(), 0, 1, 0.9, .96),
-        map(fxrand(), 0, 1, .8, 1.0)
-    ]
-    if (sunColor[0] > .13 && sunColor[0] < .98) {
-        //sunColor[1] *= .7; sunColor[2] *= .7;
-    }
-    sunColor = HSVtoRGB(sunColor[0], sunColor[1], sunColor[2]);
-    sunColor = [
-        255. * sunColor[0],
-        255. * sunColor[1],
-        255. * sunColor[2]
-    ]
-    if (isDark) {
-        sunColor = HSLtoRGB(
-            map(fxrand(), 0, 1, 0.5, .7),
-            map(fxrand(), 0, 1, 0.1, .2),
-            map(fxrand(), 0, 1, .4, .6)
-        );
-        sunColor = [
-            255. * sunColor[0],
-            255. * sunColor[1],
-            255. * sunColor[2]
-        ]
-        sunPos[1] = map(fxrand(), 0, 1, -.4, -.3);
-        sunSpread = map(fxrand(), 0, 1, 1.1, 1.1);
-    }
-    // sunColor = [255.*Math.pow(backgroundColor[0], .35),
-    // 255.*Math.pow(backgroundColor[1], 2.3), 255.*Math.pow(backgroundColor[2],
-    // 2.3)]
-    if ((backgroundColor[0] + backgroundColor[1] + backgroundColor[2]) / 3 < .35) {
-        // sunColor = HSVtoRGB(map(fxrand(), 0, 1, 0.4, .61), map(fxrand(), 0, 1, 0.2,
-        // .34), map(fxrand(), 0, 1, .6, 1.0)); sunColor = [255.*sunColor[0],
-        // 255.*sunColor[1], 255.*sunColor[2]]
-    }
-
-    /*if(ww/wh > 1){
-        baseWidth = Math.round(ress * ww/wh)
-        baseHeight = ress
-    }
-    else{
-        baseWidth = ress
-        baseHeight = Math.round(ress * wh/ww)
-    }*/
-
-    //groundclr.a[3] = 0; resizeCanvas(ww, wh, true); pg = createGraphics(ww, wh);
-
-    particlePositions = [];
-    particleColors = [];
-    particleSizes = [];
-    particleAngles = [];
-    particleIndices = [];
-
-    loadShadersAndData();
-
-}
-
-function loadShadersAndData() {
-
-    //const material = new THREE.PointsMaterial( { size: 15, vertexColors: true } );
-    var loader = new THREE.FileLoader();
-    var numFilesLeft = 2;
-    function runMoreIfDone() {
-        --numFilesLeft;
-        if (numFilesLeft === 0) {
-            loadData();
-        }
-    }
-    // loader.load('./assets/shaders/smudge.frag', function (data) {
-    //     bfShader = data;
-    //     runMoreIfDone();
-    // });
-    // loader.load('./assets/shaders/smudge.vert', function (data) {
-    //     bvShader = data;
-    //     runMoreIfDone();
-    // });
-    loader.load('./assets/shaders/sphere.frag', function (data) {
-
-        let fc = getComposition();
-        data = data.replace('XXX', fc)
-
-        let genpalette = getShaderPalette();
-        data = data.replace('YYY', genpalette.palette)
-        data = data.replace('ZZZ', ""+genpalette.len)
-        // console.log(genpalette.palette)
-        // console.log(data)
-
-        sfShader = data;
-        runMoreIfDone();
-    });
-    loader.load('./assets/shaders/sphere.vert', function (data) {
-        svShader = data;
-        runMoreIfDone();
-    });
-}
-
-function isOverlapping(v1, v2) {
-    let a1 = v1[0]
-    let b1 = v1[1]
-    let ad1 = v1[2]
-    let bd1 = v1[3]
-    let r1 = v1[4]
-    let a2 = v2[0]
-    let b2 = v2[1]
-    let ad2 = v2[2]
-    let bd2 = v2[3]
-    let r2 = v2[4]
-
-    let x1 = a1 + ad1 / 2 * Math.cos(r1);
-    let z1 = b1 + ad1 / 2 * Math.sin(r1);
-    let x2 = a1 - ad1 / 2 * Math.cos(r1);
-    let z2 = b1 - ad1 / 2 * Math.sin(r1);
-
-    let x3 = a2 + ad2 / 2 * Math.cos(r2);
-    let z3 = b2 + ad2 / 2 * Math.sin(r2);
-    let x4 = a2 - ad2 / 2 * Math.cos(r2);
-    let z4 = b2 - ad2 / 2 * Math.sin(r2);
-
-    let vec1 = new myVec(x1, z1, 0);
-    let vec2 = new myVec(x2, z2, 0);
-    let vec3 = new myVec(x3, z3, 0);
-    let vec4 = new myVec(x4, z4, 0);
-
-    if (doLinesIntersect(vec1, vec2, vec3, vec4)) {
-        return true;
-    }
-    return false;
-}
-
-let swirls = [];
-let swrlseed = fxrand();
-
-function getSwirlMesh(path, dy = 0, rw = 5, parts = 40, width = 5 * 40, pp=0.0) {
-
-    let geometry = new THREE.BufferGeometry();
-
-    let swirlmaterial = new THREE.ShaderMaterial({
-        lights: true,
-        side: THREE.DoubleSide,
-        uniforms: {
-            ...THREE.UniformsLib.lights,
-            uGlossiness: {
-                value: 20
-            },
-            uColor: {
-                value: new THREE.Color(...getIn(Math.pow(fxrand(), 1)))
-            },
-            resolution: {
-                value: [100, 100]
-            },
-            uTime: {
-                value: 0
-            },
-            algo: {
-                value: .5
-            },
-            seed: {
-                value: swrlseed
-            }
-        },
-        vertexShader: svShader,
-        fragmentShader: sfShader,
-        transparent: true,
-    });
-
-    let indices = [];
-
-    let vertices = [];
-    // let normals = [];
-    let colors = [];
-    let uvs = [];
-
-    for (let k = 0; k < path.length; k++) {
-        let rx = 0;
-        let ry = 0;
-        let rz = k*.1;
-        let ssca = .9+.2*power(noise(k*0.01, 313.13), 4.);
-        ssca = 1.;
-        // ssca = map(k, 0, path.length-1, 1, .5);
-       // swiched Y and Z because I want 2D path to map to XZ, not XY
-        for (let t = 0; t < parts; t++) {
-            let tt = map(t, 0, parts - 1, 0, parts);
-            vertices.push(
-                path[k].x + rx,
-                path[k].y + width / 2 * ssca - rw * tt * ssca + dy + ry,
-                path[k].z + rz
-            );
-        }
-    }
-    let cfrq = random(.002, .007);
-    for (let k = 0; k < path.length; k++) {
-        for (let t = 0; t < parts; t++) {
-            let col = getIn((k * cfrq) % 1.);
-            let oox = k / (path.length - 1);
-            let ooy = t / (parts - 1);
-            let amp = map(t, 0, parts - 1, 1, .5);
-            amp = map(pp, 0, 1, 1, .7);
-            if(fxrand() < .1){
-                colors.push(1., 0., 0.);
-            }
-            else{
-                colors.push(amp * col[0], amp * col[1], amp * col[2]);
-            }
-            uvs.push(oox, ooy, 0.);
-        }
-    }
-
-    for (let k = 0; k < path.length - 1; k++) {
-        for (let t = 0; t < parts - 1; t++) {
-            let ii = parts * k + t;
-            indices.push(ii, ii + 1, ii + parts);
-            indices.push(ii + 1, ii + 1 + parts, ii + parts);
-        }
-    }
-
-    geometry.setIndex(indices);
-    geometry.setAttribute(
-        'position',
-        new THREE.Float32BufferAttribute(vertices, 3)
-    );
-    // geometry.setAttribute( 'normal', new THREE.Float32BufferAttribute( normals, 3
-    // ) );
-    geometry.computeVertexNormals();
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    geometry.setAttribute('uvs', new THREE.Float32BufferAttribute(uvs, 3));
-    // const material = new THREE.MeshPhongMaterial( {     side: THREE.DoubleSide,
-    // vertexColors: true } );
-    var swirlmaterial_q = swirlmaterial.clone();
-    swirlmaterial_q.uniforms.seed.value = fxrand();
-    let mesh = new THREE.Mesh(geometry, swirlmaterial_q);
-    // mesh.castShadow = true;
-
+function addLight(){
+    let light = new THREE.DirectionalLight( 0xffffff, 1 );
+    light.position.set( 17, 17, 17 ); //default; light shining from top
+    light.castShadow = true; // default false
+    scene.add( light );
     
-    // let strokeCurve = new MyCurve(path, new THREE.Vector3(0, 0, dy));
-    // let tuberadius = 2.6;
-    // let tubegeo = new Tube(strokeCurve, strokeCurve.length, tuberadius, 12, false);
-    // mesh = new THREE.Mesh( tubegeo, swirlmaterial );
-
-    return mesh;
+    //Set up shadow properties for the light
+    light.shadow.mapSize.width = 2000; // default
+    light.shadow.mapSize.height = 2000; // default
+    light.shadow.camera.near = 0.5; // default
+    light.shadow.camera.far = 50; // default
+    light.shadow.camera.top = 20; // default
+    light.shadow.camera.bottom = -20; // default
+    light.shadow.camera.right = -20; // default
+    light.shadow.camera.left = 20; // default
+    //let helper = new THREE.CameraHelper( light.shadow.camera );
+    //scene.add( helper );
 }
 
-let dett = fxrand() < 1.5;
-function getHobbyPath(pts) {
-    let knots = makeknots(pts, 1, true);
-    return gethobbypoints(knots, true, 3.)
-}
-
-let fxaaPass;
-let postPass;
-
-function loadData() {
-    /*
-    canvas2 = document.createElement("canvas");
-    canvas2.id = "hello"
-    canvas2.width = ww;
-    canvas2.height = wh;
-    canvas2.style.position = 'absolute';
-    canvas2.style.left = '0px';
-    canvas2.style.top = '0px';
-    canvas2.style.z_index = '1111';
-    console.log(canvas2)
-    document.body.append(canvas2)
-    */
-    winScale = canvasWidth / ress;
-    // camera = new THREE.OrthographicCamera(-canvasWidth/2/winScale,
-    // canvasWidth/2/winScale, canvasHeight/2/winScale, -canvasHeight/2/winScale, 1,
-    // 2000); camera = new THREE.OrthographicCamera( 1000 * 1. / - 2, 1000 * 1. / 2,
-    // 1000 / 2, 1000 / - 2, 1, 4000 );
-    let zoox = random(88, 666);
-    zoox = fxrand() < .5 ? random(140, 200) : random(350, 600);
-    let zooy = random(88, 666);
-    zooy = fxrand() < .5 ? random(140, 200) : random(350, 600);
-
-    if(omx == omy){
-        zoox = Math.round(random(150, 300));
-        zooy = Math.round(random(400, 480));
-
-        if(fxrand() < .5){
-            zooy = Math.round(random(150, 300));
-            zoox = Math.round(random(400, 480));
-        }
-
-        if(fxrand() < .3){
-            zooy = Math.round(random(150, 300));
-            zoox = Math.round(random(150, 300));
-        }
-    }
-    if(omx > omy){
-        zoox = Math.round(random(200, 300));
-        zoox = fxrand() < .5 ? Math.round(random(240, 300)) : Math.round(random(350, 450));
-    }
-    if(omx < omy){
-        zoox = Math.round(random(200, 450));
-        zooy = Math.round(random(240, 300));
-    }
-    zoox = zooy = 200;
-    console.log(`${omx} : ${omy} ratio, ${zoox} : ${zooy} view`);
-
-    rawCamera = new THREE.OrthographicCamera(
-        -omx*zoox / 2,
-        omx*zoox / 2,
-        omy*zooy / 2,
-        -omy*zooy / 2,
-        1,
-        4000
-    );
-    // camera = new THREE.PerspectiveCamera( 27, canvasWidth / canvasHeight, 1, 222
-    // );
-
-    var ff = true;
-    if (scene) 
-        ff = false;
-    scene = new THREE.Scene();
-
-    rawCamera.position.x = 0;
-    rawCamera.position.z = 666;
-    rawCamera.position.y = 0;
-    // camera.lookAt(scene.position);
-
-    var rx = fxrand() * 256;
-    var ry = fxrand() * 256;
-    // backgroundColor = [pixelData[0]/255., pixelData[1]/255., pixelData[2]/255.];
-    // scene.fog = new THREE.Fog( 0x050505, 2000, 3500 );
-
-    //
-
-    const particles = 33133;
-
-    const pointsGeo = new THREE.BufferGeometry();
-
-    pointsGeo.setAttribute(
-        'position',
-        new THREE.Float32BufferAttribute(particlePositions, 3)
-    );
-    pointsGeo.setAttribute(
-        'color',
-        new THREE.Float32BufferAttribute(particleColors, 4)
-    );
-    pointsGeo.setAttribute(
-        'size',
-        new THREE.Float32BufferAttribute(particleSizes, 2)
-    );
-    pointsGeo.setAttribute(
-        'angle',
-        new THREE.Float32BufferAttribute(particleAngles, 1)
-    );
-    pointsGeo.setAttribute(
-        'index',
-        new THREE.Float32BufferAttribute(particleIndices, 1)
-    );
-
-    var customUniforms = {
-        u_time: {
-            value: frameCount
-        },
-        u_spread: {
-            value: 33
-        },
-        u_mouse: {
-            value: [0, 0]
-        },
-        u_diffuse: {
-            value: [0, 0, 0, 1]
-        },
-        u_scrollscale: {
-            value: scrollscale
-        },
-        u_winscale: {
-            value: 4.
-        },
-        u_seed: map(fxrand(), 0, 1, 1000.)
-    };
-    var scustomUniforms = {
-        time: {
-            value: frameCount
-        }
-    };
-
-    // const material = new THREE.ShaderMaterial(
-    //     {uniforms: customUniforms, vertexShader: vShader, fragmentShader: fShader, transparent: true}
-    // );
-
-    const smaterial = new THREE.ShaderMaterial({
-        lights: true,
-        uniforms: {
-            ...THREE.UniformsLib.lights,
-            uGlossiness: {
-                value: 20
-            },
-            uColor: {
-                value: new THREE.Color(...getIn(Math.pow(fxrand(), 1)))
-            },
-            resolution: {
-                value: [100, 100]
-            },
-            uTime: {
-                value: 0
-            },
-            seed: {
-                value: fxrand()
-            }
-        },
-        vertexShader: svShader,
-        fragmentShader: sfShader,
-        transparent: true
-    });
-
-    //console.log(vShader);
-
-    let totalh = random(140, 200);
-    let nh = Math.round(random(1, 4));
-    if (fxrand() < -.5) 
-        nh = 1;
-    nh = 1;
-
-    // nh = Math.round(random(111, 122));
-    let oneh = totalh / nh;
-    let initpts = getPathPts();
-    let nptsa1 = [];
-    let nptsa2 = [];
-
-    let isHooby = fxrand() < .5;
-
-    let initPath = getPathPtsSingle();
-    let processedPaths = [];
-    for (let k = 0; k < nh; k++) {
-        let yy;
-        if (nh == 1) 
-            yy = 0;
-        else 
-            yy = map(k, 0, nh - 1, -(totalh / 2 - oneh / 2), (totalh / 2 - oneh / 2));
-        let rw = 1.;
-        //let parts = 5;  minimalno 2
-        let parts = max(1, Math.round(oneh / rw));
-        rw = oneh / parts;
-        let width = rw * parts;
-        let npts = [];
-        let marg = random(.9, .95);
-        let npo = Math.round(random(24, 25));
-        // for (let q = 0; q < npo; q++) {
-        //     let npt = new myVec(0, 0);
-        //     let amp = map(q, 0, npo-1, 0, 1);
-        //     amp = map(Math.pow(amp, 3), 0, 1, 0, 115) * power(noise(k * 0.07), 4.);
-        //     npt.x = map(power(noise(q*0.1, 41.31), 3.), 0, 1, -omx*400/2*.95, omx*400/2*.95);
-        //     npt.x = map(fxrand(), 0, 1, -omx*400/2*.95, omx*400/2*.95);
-        //     npt.y = map(q, 0, npo-1, -(omy*400/2-totalh/2)*marg, (omy*400/2-totalh/2)*marg);
-        //     npt.z = map(q, 0, npo-1, -100, 100);
-        //     npts.push(npt);
-        // }
-        // if(k == 0){
-        //     nptsa1 = npts;
-        // }
-        // if(k == nh-1){
-        //     nptsa2 = npts;
-        // }
-        let initPathWiggled = wiggle(initPath, .1+0*random(0, 4));
-
-        let hobbypath;
-        if(fxrand() < isHooby){
-            hobbypath = getHobbyPath(initPathWiggled);
-            // hobbypath = centered(getHobbyPath(initPath), width, k/max(1, nh-1), false);
-        }
-        else{
-            hobbypath = initPathWiggled;
-            // hobbypath = centered(initPath, width, k/max(1, nh-1), false);
-        }
-        //let hobbypath = npts;
-        let shortened = [];
-        let kaka = map(fxrand(), 0, 1, .5, 1.);
-        if(nh < 5){
-            kaka = 1;
-        }
-        kaka = 1;
-        for(let t = 0; t < hobbypath.length*kaka; t++){
-            shortened.push(hobbypath[t]);
-        }
-        //  const swirl = getSwirlMesh(shortened, yy, rw, parts, width, k/max(1, nh-1));
-        processedPaths.push(shortened);
-        //  swirls.push(swirl);
-        //  scene.add(swirl);
-    }
-    let adjustedPaths = [];
-    
-    let minx = 100000;
-    let miny = 100000;
-    let maxx = -100000;
-    let maxy = -100000;
-    for(let k = 0; k < processedPaths.length; k++){
-        let path = processedPaths[k];
-        let yy;
-        if (nh == 1) 
-            yy = 0;
-        else 
-            yy = map(k, 0, nh - 1, -(totalh / 2 - oneh / 2), (totalh / 2 - oneh / 2));
-        let rw = 1.;
-        //let parts = 5;  minimalno 2
-        let parts = max(1, Math.round(oneh / rw));
-        rw = oneh / parts;
-        let width = rw * parts;
-
-        console.log("yy", yy);
-        let bb = getBB(path, width, yy);
-        
-        if(bb.x1 < minx) minx = bb.x1;
-        if(bb.y1 < miny) miny = bb.y1;
-        if(bb.x2 > maxx) maxx = bb.x2;
-        if(bb.y2 > maxy) maxy = bb.y2;
-    }
-
-    let bb = {'x1': minx, 'y1': miny, 'x2': maxx, 'y2': maxy};
-    console.log(bb)
-    let sx = random(.8, .8715);
-    let sy = random(.8, .8715);
-    if(fxrand() < .5){
-        sx *= random(.4, .6);
-    }
-
-    for(let k = 0; k < processedPaths.length; k++){
-        let centered = centerPath(processedPaths[k], bb, sx, sy)
-        adjustedPaths.push(centered);
-    }
-    
-    for(let k = 0; k < adjustedPaths.length; k++){
-        let swirl = adjustedPaths[k];
-        let yy;
-        if (nh == 1) 
-            yy = 0;
-        else 
-            yy = map(k, 0, nh - 1, -(totalh / 2 - oneh / 2), (totalh / 2 - oneh / 2));
-        let rw = 1.;
-        //let parts = 5;  minimalno 2
-        let parts = max(1, Math.round(oneh / rw));
-        rw = oneh / parts;
-        let width = rw * parts;
-        console.log(width)
-
-        swirl = getSwirlMesh(swirl, yy, rw, parts, width, k/max(1, nh-1));
-        swirls.push(swirl);
-        scene.add(swirl);
-    }
-
-
-    // for(let k = 0; k < 3; k++){
-    //     let npts = [];
-    //     for (let q = 0; q < initpts.length; q++) {
-    //         let pt = nptsa1[q];
-    //         let npt = new myVec(pt.x, pt.y);
-    //         let amp = map(q, 0, initpts.length - 1, 0, 1);
-    //         amp = map(Math.pow(amp, 3), 0, 1, 0, 12) * power(noise(k * 0.07), 4.);
-    //         npt.x += map(fxrand(), 0, 1, -amp, amp);
-    //         npt.y += map(fxrand(), 0, 1, -amp, amp);
-    //         npts.push(npt);
-    //     }
-    //     let strokeCurve = new MyCurve(getHobbyPath(npts), new THREE.Vector3(0, 0, (fxrand()<.5 ? 1 : -1)*random(totalh*.4, totalh*.5)));
-    //     let tuberadius = random(.7, .8);
-    //     let tubegeo = new Tube(strokeCurve, strokeCurve.length, tuberadius, 5, false);
-    //     let tubecol = fxrand() < 1.5 ? random(0, .1) : random(.9, 1);
-    //     const tubemat = new THREE.MeshBasicMaterial( { color: new THREE.Color(tubecol, tubecol, tubecol) } );
-    //     const tubemesh = new THREE.Mesh( tubegeo, tubemat );
-    //     scene.add( tubemesh );
-    // }
-    // let strokeCurve1 = new MyCurve(getHobbyPath(nptsa1), new THREE.Vector3(0, 0, -totalh/2));
-    // let strokeCurve2 = new MyCurve(getHobbyPath(nptsa2), new THREE.Vector3(0, 0, totalh/2));
-    // let tuberadius = .7;
-    // let tubegeo1 = new Tube(strokeCurve1, strokeCurve1.length, tuberadius, 28, false);
-    // let tubegeo2 = new Tube(strokeCurve2, strokeCurve2.length, tuberadius, 28, false);
-    // const tubemat = new THREE.MeshBasicMaterial( { color: new THREE.Color(...getIn(fxrand()*.3)) } );
-    // const tubemesh1 = new THREE.Mesh( tubegeo1, tubemat );
-    // const tubemesh2 = new THREE.Mesh( tubegeo2, tubemat );
-    //   scene.add( tubemesh1 );
-    //   scene.add( tubemesh2 );
-
-    // const sphereGeo = new THREE.SphereGeometry(236, 144, 144);
-    // const sphere = new THREE.Mesh(sphereGeo, smaterial);
-    // sphere.castShadow = true;
-    // sphere.receiveShadow = true;
-    // sphere.scale.z = .01;
-    // sphere.material.uniforms.resolution.value = [
-    //     canvasWidth * pixelRatio,
-    //     canvasHeight * pixelRatio
-    // ]
-    // scene.add( sphere );
-
-    const fmaterial = new THREE.ShaderMaterial({
-        lights: true,
-        uniforms: {
-            ...THREE.UniformsLib.lights,
-            uGlossiness: {
-                value: 3
-            },
-            uColor: {
-                value: new THREE.Color(...getIn(Math.pow(fxrand(), 1)))
-            }
-        },
-        vertexShader: svShader,
-        fragmentShader: sfShader
-    });
-    // const floorGeo = new THREE.PlaneGeometry( 133, 133, 1, 1 ); const floor = new
-    // THREE.Mesh( floorGeo, fmaterial); floor.castShadow = true;
-    // floor.receiveShadow = true scene.add( floor ); floor.rotation.x =
-    // -90/180*Math.PI; floor.position.y = -2; floor.rotation.z = .3;
-
-    const ambientLight = new THREE.AmbientLight('#ffffff', .4)
-    scene.add(ambientLight)
-
-    const directionalLight = new THREE.DirectionalLight('#ffffff', 1)
-    let ang = map(fxrand(), 0, 1, -90, -180) / 180 * 3.14 * (-1);
-    ang = fxrand() * 3.14 * 2;
-    let rad = map(fxrand(), 0, 1, 5, 6);
-    directionalLight
-        .position
-        .set(rad * Math.cos(ang), 6, rad * Math.sin(ang))
-    directionalLight.castShadow = true
-    directionalLight.shadow.mapSize.width = 2048 * 8
-    directionalLight.shadow.mapSize.height = 2048 * 8
-    directionalLight.shadow.camera.left = -14;
-    directionalLight.shadow.camera.right = 14;
-    directionalLight.shadow.camera.top = 14;
-    directionalLight.shadow.camera.bottom = -14;
-    directionalLight.shadow.camera.near = .1;
-    directionalLight.shadow.camera.far = 111;
-    scene.add(directionalLight)
-
-    if (ff) 
-        renderer = new THREE.WebGLRenderer(
-            {preserveDrawingBuffer: true, antialias: true}
-        );
-    
-    renderer.shadowMap.enabled = true
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-    renderer.autoClear = true;
-
-    
-    // renderer2 = new THREE.WebGLRenderer(
-    //     {preserveDrawingBuffer: true, antialias: true}
-    // );
-    // renderer2.autoClear = true;
-    // renderer2.setPixelRatio(pixelRatio);
-    // renderer2.setSize(canvasWidth, canvasHeight);
-
-    rawTarget = new THREE.WebGLRenderTarget(
-        baseWidth * pixelRatio,
-        baseHeight * pixelRatio
-    );
-
-    depthTarget = new THREE.WebGLRenderTarget(
-        baseWidth * pixelRatio,
-        baseHeight * pixelRatio
-    );
-
-    smudgeTarget = new THREE.WebGLRenderTarget(
-        baseWidth * pixelRatio,
-        baseHeight * pixelRatio
-    );
-
-    smudgeTargetH = new THREE.WebGLRenderTarget(
-        baseWidth * pixelRatio,
-        baseHeight * pixelRatio
-    );
-
-    smudgeTargetV = new THREE.WebGLRenderTarget(
-        baseWidth * pixelRatio,
-        baseHeight * pixelRatio
-    );
-
-
-    renderer.autoClearColor = true;
-    //renderer.setPixelRatio( 1.0 );
-    renderer.setPixelRatio(pixelRatio);
-    renderer.setSize(canvasWidth, canvasHeight);
-
-    renderer.domElement.id = "cnvs"
-    // renderer.domElement.style.position = "absolute";
-    // renderer.domElement.style.left = "0px"; renderer.domElement.style.top =
-    // "0px";
-    if (ff) 
-        document
-            .body
-            .appendChild(renderer.domElement);
-    
-    repositionCanvas(renderer.domElement);
-
-    //renderer.domElement.style.border = "10px solid black";
-
-    //renderer.setClearColor(new THREE.Color(.1, .16, .16), 1);
-
-    let bbc = getIn(fxrand());
-    bbc = [
-        .3 + .3 * bbc[0],
-        .3 + .3 * bbc[1],
-        .3 + .3 * bbc[2]
-    ]
-    scene.background = new THREE.Color(...bbc);
-
-    rawCamera.position.x = 0;
-    rawCamera.position.z = 666;
-    rawCamera.position.y = 0;
-    rawCamera.lookAt(new THREE.Vector3(0,0,0));
-    orbitcontrols = new OrbitControls(rawCamera, renderer.domElement);
-    // camera.lookAt(new THREE.Vector3(0,5,0)); OVO
-    //renderer2.setRenderTarget(rawTarget); 
-    //renderer2.setClearColor( new THREE.Color(1, 0, 0));
-    //renderer2.shadowMap.enabled = true
-    //renderer2.shadowMap.type = THREE.PCFSoftShadowMap;
-    // renderer.setClearColor( new THREE.Color(.6, .6, .6), 1 );
-    // renderer.setClearColor( new THREE.Color(r1*p+(1-p)*r2, g1*p+(1-p)*g2,
-    // b1*p+(1-p)*b2), 1 ); renderer.setClearColor( new THREE.Color(.9, .16, .16), 1
-    // ); renderer.clear();
-    PostProcShader.uniforms.seed1.value = fxrand();
-    PostProcShader.uniforms.color.value = getIn(fxrand());
-
-
-    fxaaPass = new ShaderPass(FXAAShader);
-    postPass = new ShaderPass(PostProcShader);
-    postPass.uniforms.resolution.value = [
-        canvasWidth * pixelRatio,
-        canvasHeight * pixelRatio
-    ]
-    // fxaaPass.uniforms[ 'resolution' ].value.x = 1 / ( window.innerWidth *
-    // pixelRatio ); fxaaPass.uniforms[ 'resolution' ].value.y = 1 / (
-    // window.innerHeight * pixelRatio );
-    fxaaPass.uniforms.resolution.value = [
-        1 / (canvasWidth * pixelRatio),
-        1 / (canvasHeight * pixelRatio)
-    ];
-
-    // composer = new EffectComposer(renderer);
-    // const renderPass = new RenderPass(scene, camera);
-    // composer.addPass(renderPass);
-    // composer.addPass(fxaaPass);
-    // composer.addPass(postPass);
-    //composer.render();
-
-    var r1 = palette[0][0];
-    var g1 = palette[0][1];
-    var b1 = palette[0][2];
-    var r2 = .5;
-    var g2 = .5;
-    var b2 = .5;
-    var p = .85;
-
-    
-    smudgeCamera = new THREE.OrthographicCamera(
-        -omx*400 / 2,
-        omx*400 / 2,
-        omy*400 / 2,
-        -omy*400 / 2,
-        1,
-        4000
-    );
-    smudgeCamera.position.z = 666;
-    smudgeScene = new THREE.Scene(); 
-    smudgeGeometry = new THREE.PlaneGeometry(400*omx, 400*omy); 
-    smudgeMaterial = new THREE.ShaderMaterial({
-             uniforms: BlurShader.uniforms,
-             vertexShader: BlurShader.vertexShader,     
-             fragmentShader: BlurShader.fragmentShader,     
-             transparent:  false 
-    }); 
-    smudgeMesh = new THREE.Mesh(smudgeGeometry, smudgeMaterial);
-    smudgeMesh.material.uniforms.resolution.value = [canvasWidth*pixelRatio, canvasHeight*pixelRatio];
-    smudgeScene.add(smudgeMesh);
-    
-    postprocCamera = new THREE.OrthographicCamera(
-        -omx*400 / 2,
-        omx*400 / 2,
-        omy*400 / 2,
-        -omy*400 / 2,
-        1,
-        4000
-    );
-    postprocCamera.position.z = 666;
-    postprocScene = new THREE.Scene(); 
-    postprocGeometry = new THREE.PlaneGeometry(400*omx, 400*omy); 
-    postprocMaterial = new THREE.ShaderMaterial({
-             uniforms: PostProcShader.uniforms,
-             vertexShader: PostProcShader.vertexShader,     
-             fragmentShader: PostProcShader.fragmentShader,     
-             transparent:  false 
-    }); 
-    postprocMesh = new THREE.Mesh(postprocGeometry, postprocMaterial);
-    postprocMesh.material.uniforms.resolution.value = [canvasWidth*pixelRatio, canvasHeight*pixelRatio];
-    postprocScene.add(postprocMesh);
-   
-    scene.background = new THREE.Color(...bbc);
-    scene.background = new THREE.Color(.03, .03, .03);
-    
-    renderRoutine();
-
-    
-    if (firsttime) {
-        //animate();
-        firsttime = false;
-    }
-
-    fxpreview();
-    console.log('hash:', fxhash);
-    //window.addEventListener( 'resize',
-    // onWindowResize ); window.onmousemove = animate; window.onmouseup =
-    // function(){isdown = false; mouseprev.x = mouse.x; mouseprev.y = mouse.y;};
-}
-
-function wiggle(path, aamp=1){
-    
-    let wiggled = [];
-    for (let q = 0; q < path.length; q++) {
-        let pt = path[q];
-        let npt = new myVec(pt.x, pt.y);
-        let amp = map(q, 0, path.length - 1, 0, 1);
-        amp = map(Math.pow(amp, 3), 0, 1, 0, 15) * power(noise(k * 0.07), 4.);
-        npt.x += map(fxrand(), 0, 1, -amp, amp)*aamp;
-        npt.y += map(fxrand(), 0, 1, -amp, amp)*aamp;
-        wiggled.push(npt);
-    }
-
-    return wiggled;
-}
-
-let bmseed = fxrand();
-let dddd = false;
-function renderRoutine(){
-    for(let k = 0; k < swirls.length; k++){
-        let sw = swirls[k];
-        sw.material.uniforms.algo.value = 0.0;
-    }
-    renderer.setRenderTarget(dddd==true ? null : rawTarget); 
-    renderer.setClearColor( new THREE.Color(0,0,0) );
-    renderer.clear();
-    renderer.render(scene, rawCamera);
-    if(dddd){
-        return;
-    }
-    
-    for(let k = 0; k < swirls.length; k++){
-        let sw = swirls[k];
-        sw.material.uniforms.algo.value = 1.0;
-    }
-    scene.background = new THREE.Color(0,0,0);
-    renderer.setRenderTarget(depthTarget); 
-    renderer.setClearColor( new THREE.Color(0,0,0) );
-    renderer.clear();
-    renderer.render(scene, rawCamera);
-
-    let finalBlurTexture = depthTarget.texture;
-    smudgeMesh.material.uniforms.tDiffuse.value = finalBlurTexture;
-    
-    smudgeMesh.material.uniforms.dmap.value = depthTarget.texture;
-    for(let k = 0; k < 1; k++){
-        smudgeMesh.material.uniforms.tDiffuse.value = finalBlurTexture;
-        smudgeMesh.material.uniforms.uDir.value = [1, 0];
-        smudgeMesh.material.uniforms.amp.value = 2.;
-        renderer.setRenderTarget(smudgeTargetH); 
-        renderer.setClearColor( new THREE.Color(0,0,0) );
-        renderer.clear();
-        renderer.render(smudgeScene, smudgeCamera);
-        
-        smudgeMesh.material.uniforms.tDiffuse.value = smudgeTargetH.texture;
-        smudgeMesh.material.uniforms.uDir.value = [0, 1];
-        smudgeMesh.material.uniforms.amp.value = .06;
-        renderer.setRenderTarget(smudgeTargetV);
-        renderer.setClearColor( new THREE.Color(0,0,0) );
-        renderer.clear();
-        renderer.render(smudgeScene, smudgeCamera);
-
-        finalBlurTexture = smudgeTargetV.texture;
-    }
-
-    scene.background = new THREE.Color(.03, .03, .03);
-    finalBlurTexture = rawTarget.texture;
-    smudgeMesh.material.uniforms.seed.value = fxrand();
-    let bval = random(1, 2);
-    for(let k = 0; k < 4; k++){
-        smudgeMesh.material.uniforms.tDiffuse.value = finalBlurTexture;
-        smudgeMesh.material.uniforms.uDir.value = [1, 0];
-        smudgeMesh.material.uniforms.amp.value = 2.;
-        renderer.setRenderTarget(smudgeTargetH); 
-        renderer.setClearColor( new THREE.Color(0,0,0) );
-        renderer.clear();
-        renderer.render(smudgeScene, smudgeCamera);
-        
-        smudgeMesh.material.uniforms.tDiffuse.value = smudgeTargetH.texture;
-        smudgeMesh.material.uniforms.uDir.value = [0, 1];
-        smudgeMesh.material.uniforms.amp.value = 2.;
-        renderer.setRenderTarget(smudgeTarget);
-        renderer.setClearColor( new THREE.Color(0,0,0) );
-        renderer.clear();
-        renderer.render(smudgeScene, smudgeCamera);
-        finalBlurTexture = smudgeTarget.texture;
-    }
-
-    postprocMesh.material.uniforms.seed1.value = fxrand();
-    postprocMesh.material.uniforms.ztime.value = fxrand();
-    postprocMesh.material.uniforms.tDiffuse.value = rawTarget.texture;
-    postprocMesh.material.uniforms.tDiffuse2.value = depthTarget.texture;
-    postprocMesh.material.uniforms.tDiffuse3.value = smudgeTargetV.texture;
-    postprocMesh.material.uniforms.tDiffuse4.value = smudgeTarget.texture;
-
-    renderer.setRenderTarget(null);
-    renderer.setClearColor( new THREE.Color(0,0,0) );
-    renderer.clear();
-    //renderer.setClearColor( new THREE.Color(palette[0][0], palette[0][1], palette[0][2]) );
-    renderer.render(postprocScene, postprocCamera);
-}
-
-
-function getPathPtsSingle() {
-    let striw = random(.08, .8);
-    let pts = [];
-    let frae = random(.03, .3);
-    if (fxrand() < 1.5) {
-        let nn = random(4, 62);
-        for (let k = 0; k < nn; k++) {
-            pts.push(new myVec(
-                0.24 * map(power(noise(k * frae, 985.33), 2), 0, 1, -1000 / 2 * 1.4, 1000 / 2 * 1.4),
-                0.24 * map(k, 0, nn - 1, -1010 / 2, 1010 / 2) * 1.1 + 0.24 * map(power(noise(k * 1.3, 123.33), 2), 0, 1, -1010 / 2 * .3, 1010 / 2 * .3),
-            ));
-        }
-    } else {
-        let nn = random(4, 64);
-        for (let k = 0; k < nn; k++) {
-            pts.push(
-                new myVec(0.24 * random(-1000 / 2, 1000 / 2), 0.24 * random(-1010 / 2 * striw, 1010 / 2 * striw),)
-            );
-        }
-    }
-
-    let hp = getHobbyPath(pts);
-    let minx = 100000;
-    let miny = 100000;
-    let maxx = -100000;
-    let maxy = -100000;
-    for(let k = 0; k < hp.length; k++){
-        let p = hp[k];
-        if(p.x < minx) minx = p.x;
-        if(p.y < miny) miny = p.y;
-        if(p.x > maxx) maxx = p.x;
-        if(p.y > maxy) maxy = p.y;
-    }
-    let midx = (minx + maxx)/2;
-    let midy = (miny + maxy)/2;
-
-    let scax = Math.abs(maxx-minx);
-    let scay = Math.abs(maxy-miny);
-
-
-    if(omy < 1.){
-        //scax = scay = 170/scay;
-        scax = 300/scax;
-        scay = 170/scay;
-        console.log('hello');
-        console.log(minx, maxx, miny, maxy);
-        console.log(scax, scay);
-    }
-    else{
-        scax = scay = 300/scay;
-    }
-    
-    let shifted = [];
-    for(let k = 0; k < pts.length; k++){
-        let p = pts[k];
-        shifted.push(new myVec(scax*(p.x-midx), scay*(p.y-midy)))
-    }
-
-    return shifted;
-}
-
-function getPathPts() {
-    let striw = random(.3, .8);
-    striw = .8;
-    let pts = [];
-    let frae = random(.03, .3);
-    if (fxrand() < 1.5) {
-        let nn = random(34, 62);
-        for (let k = 0; k < nn; k++) {
-            pts.push(new myVec(
-                0.24 * map(power(noise(k * frae, 985.33), 2), 0, 1, -1000 / 2 * 1.4, 1000 / 2 * 1.4),
-                0.24 * map(k, 0, nn - 1, -1010 / 2, 1010 / 2) * 1.1 + 0.24 * map(power(noise(k * 1.3, 123.33), 2), 0, 1, -1010 / 2 * .3, 1010 / 2 * .3),
-            ));
-        }
-    } else {
-        let nn = random(5, 64);
-        nn = random(4, 8);
-        for (let k = 0; k < nn; k++) {
-            pts.push(
-                new myVec(0.24 * random(-1000 / 2, 0 / 2), 0.24 * random(-1010 / 2 * striw, 1010 / 2 * striw),)
-            );
-        }
-    }
-
-    let hp;
-    if(dett){
-        hp = pts;
-    }
-    else{
-        hp = getHobbyPath(pts);
-    }
-    
-    //hp = centered(hp);
-
-    return hp;
-}
-
-let dtime = 1. / 30;
-let ttime = 0;
-let firsttime = true;
-
-function getBB(pts, oneh, shift){
-    let minx = 100000;
-    let miny = 100000;
-    let maxx = -100000;
-    let maxy = -100000;
-    for(let k = 0; k < pts.length; k++){
-        let p = pts[k];
-        if(p.x < minx) minx = p.x;
-        if(p.y+shift - oneh < miny) miny = p.y+shift - oneh;
-        if(p.x > maxx) maxx = p.x;
-        if(p.y+shift + oneh > maxy) maxy = p.y+shift + oneh;
-    }
-    return {'x1': minx, 'y1': miny, 'x2': maxx, 'y2': maxy}
-}
-
-function centerPath(pts, bb, rx, ry){
-
-    let minx = bb.x1;
-    let miny = bb.y1;
-    let maxx = bb.x2;
-    let maxy = bb.y2;
-
-    let midx = (minx + maxx)/2;
-    let midy = (miny + maxy)/2;
-
-    let scax = Math.abs(maxx-minx);
-    let scay = Math.abs(maxy-miny);
-
-    if(rx && ry){
-        scax = omx*400/scax*rx;
-        scay = omy*400/scay*ry;
-    }
-    else{
-        scax = scay = 1;
-    }
-    console.log(scax, scay)
-    let shiftedAndScaled = [];
-    for(let k = 0; k < pts.length; k++){
-        let p = pts[k];
-        shiftedAndScaled.push(new myVec(scax*(p.x-midx), scay*(p.y-midy), p.z))
-    }
-    return shiftedAndScaled;
-}
-
-function centered(pts, oneh, rescale=true){
-    let minx = 100000;
-    let miny = 100000;
-    let maxx = -100000;
-    let maxy = -100000;
-    for(let k = 0; k < pts.length; k++){
-        let p = pts[k];
-        if(p.x < minx) minx = p.x;
-        if(p.y - oneh < miny) miny = p.y - oneh;
-        if(p.x > maxx) maxx = p.x;
-        if(p.y + oneh > maxy) maxy = p.y + oneh;
-    }
-    let midx = (minx + maxx)/2;
-    let midy = (miny + maxy)/2;
-
-    let scax = Math.abs(maxx-minx);
-    let scay = Math.abs(maxy-miny);
-
-    // if(omy < 1.){
-    //     scax = omx*400/scax;
-    //     scay = omy*400/scay;
-    // }
-    // else{
-    //     scax = omx*400/scax;
-    //     scay = omy*400/scay;
-    // }
-
-    if(!rescale){
-        scax = scay = 1;
-    }
-    else{
-        scax = omx*400/scax*random(.9, .95);
-        scay = omy*400/scay*random(.9, .95);
-        if(fxrand() < .5){
-            scax *= random(.4, .6);
-        }
-    }
-
-    
-    let shiftedAndScaled = [];
-    for(let k = 0; k < pts.length; k++){
-        let p = pts[k];
-        shiftedAndScaled.push(new myVec(scax*(p.x-midx), scay*(p.y-midy), p.z))
-    }
-    return shiftedAndScaled;
-}
-
-let camera_positions = [
-    new THREE.Vector3(0, 800, 800),
-    new THREE.Vector3(0, 0, 800),
-    new THREE.Vector3(-800, 0, 0),
-    new THREE.Vector3(-100, -800, 0),
-    new THREE.Vector3(-800, 0, 0),
-    new THREE.Vector3(0, 0, 800)
-]
+let frameCount = 0;
 
 function animate() {
-    // renderer.setRenderTarget(null); renderer.clear(); orbitcontrols.update();
-    // swirlmaterial.uniforms.uTime.value = ttime;
-    // ttime += dtime;
+    requestAnimationFrame( animate );
 
-    if (idwn || true) {
-        orbitcontrols.update();
-    } else {
-        let intdur = 3;
-        let tttime = ttime % (camera_positions.length * intdur);
-        let transition = 2;
-
-        for (let to = 0; to < camera_positions.length; to++) {
-            let li = map(
-                to,
-                0,
-                camera_positions.length - 1,
-                intdur,
-                intdur * camera_positions.length
-            );
-            if (tttime < li) {
-                let ctime = power(constrain(map(tttime, li - transition, li, 0, 1), 0, 1), 2);
-                camera.position.x = lerp(
-                    camera_positions[to].x,
-                    camera_positions[(to + 1) % camera_positions.length].x,
-                    ctime
-                );
-                camera.position.y = lerp(
-                    camera_positions[to].y,
-                    camera_positions[(to + 1) % camera_positions.length].y,
-                    ctime
-                );
-                camera.position.z = lerp(
-                    camera_positions[to].z,
-                    camera_positions[(to + 1) % camera_positions.length].z,
-                    ctime
-                );
-                break;
-            }
-        }
-
-        let dd = Math.sqrt(
-            camera.position.x * camera.position.x + camera.position.y * camera.position.y + camera.position.z * camera.position.z
-        );
-        camera.position.x /= dd;
-        camera.position.y /= dd;
-        camera.position.z /= dd;
-        camera.position.x *= 500;
-        camera.position.y *= 500;
-        camera.position.z *= 500;
-        camera.lookAt(new THREE.Vector3(0, 0, 0))
-    }
-    renderRoutine(dddd)
-    //renderer2.render(scene, camera);
-
-    //composer.readBuffer.tpostPass.uniforms.tDiffuse2.value = rawTarget.texture;
-
-    // composer.render();
-
-    requestAnimationFrame(animate)
-}
-
-function lines() {
-    var nn = Math.round(map(fxrand(), 0, 1, 310, 320)) * .1
-
-    for (var k = 0; k < nn * .1; k++) {
-        var brr = map(fxrand(), 0, 1, 0.01, 0.15);
-        x2 = map(fxrand(), 0, 1, -ress / 2 * .05, ress / 2 * .05);
-        y2 = map(Math.pow(fxrand(), 3), 0, 1, -ress / 2 * .05, ress / 2 * .05);
-        x1 = map(fxrand(), 0, 1, -ress / 2 * .4, ress / 2 * .4);
-        y1 = map(Math.pow(fxrand(), 3), 0, 1, -ress / 2 * .4, ress / 2 * .4);
-        // drawLine(    new THREE.Vector2(x1, y1),    new THREE.Vector2(x2, y2),
-        // map(fxrand(), 0, 1, 0.3, 0.6)*1.8, 1.5, [brr*4,brr*.1,brr*.1], 33 );
+    for(let obj of objects){
+        obj.material.uniforms.cameraPos.value = [camera.position.x, camera.position.y, camera.position.z]
     }
 
-    var x1 = map(fxrand(), 0, 1, -ress / 2 * .9, ress / 2 * .9);
-    var y1 = map(fxrand(), 0, 1, -ress / 2 * .9, ress / 2 * .9);
-    var x2 = map(fxrand(), 0, 1, -ress / 2 * .9, ress / 2 * .9);
-    var y2 = map(fxrand(), 0, 1, -ress / 2 * .9, ress / 2 * .9);
-    for (var k = 0; k < nn; k++) {
-        var brr = map(fxrand(), 0, 1, 0.01, 0.15);
-        x2 = x1;
-        y2 = y1;
-        x1 = map(power(fxrand(), 3), 0, 1, -ress / 2 * .9, ress / 2 * .9);
-        y1 = map(power(fxrand(), 3), 0, 1, -ress / 2 * .9, ress / 2 * .9);
-        if (Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2)) < 1200) {
-            drawLine(
-                new THREE.Vector2(x1, y1),
-                new THREE.Vector2(x2, y2),
-                map(fxrand(), 0, 1, 0.3, 0.6),
-                1.1,
-                [
-                    brr, brr, brr
-                ],
-                33
-            );
-        }
-        // drawLine(    new THREE.Vector2(map(fxrand(), 0, 1, -ress/2*.1, ress/2*.1),
-        // map(fxrand(), 0, 1, -ress/2*.1, ress/2*.1)),    new
-        // THREE.Vector2(map(fxrand(), 0, 1, -ress/2*.9, ress/2*.9), map(fxrand(), 0, 1,
-        // -ress/2*.9, ress/2*.9)),    map(fxrand(), 0, 1, 0.3, 0.6), 1.5,
-        // [brr,brr,brr], 24 );
-    }
-}
 
-function repositionCanvas(canvas) {
-    var win = window;
-    var doc = document;
-    var body = doc.getElementsByTagName('body')[0];
-    var ww = win.innerWidth;
-    var wh = win.innerHeight;
+    var vector = new THREE.Vector3( 0, 0, -1 );
+    vector.applyQuaternion( camera.quaternion );
+    vector.normalize();
 
-    if (isMobile()) {
-        //canvas.width = ww; canvas.height = wh; canvas.style.borderWidth = "6px";
-    } else {
-        // canvas.width = Math.min(ww, wh) - 130; canvas.height = Math.min(ww, wh) -
-        // 130;
-    }
+    var right = new THREE.Vector3( 0, 0, - 1 );
+    right.crossVectors(vector, new THREE.Vector3( 0, 1, 0 ))
+    right.normalize();
+    right.multiplyScalar(0.12 * window.innerWidth/2000);
 
-    canvas.style.position = 'absolute';
-    canvas.style.left = (ww - canvasWidth) / 2 + 'px';
-    canvas.style.top = (wh - canvasHeight) / 2 + 'px'; // ovih 6 je border
+    var down = new THREE.Vector3( 0, 0, - 1 );
+    down.crossVectors(vector, right)
+    down.normalize();
+    down.multiplyScalar(0.05 * window.innerWidth/2000);
+    //vector.cross(camera.up);
 
-}
+    cx = cx + .1*(camera.position.x - cx);
+    cy = cy + .1*(camera.position.y - cy);
+    cz = cz + .1*(camera.position.z - cz);
 
-var cnt = 0
+    let amp = Math.sqrt((camera.position.x - cx)**2 + (camera.position.y - cy)**2 + (camera.position.z - cz)**2);
 
-var shft = map(fxrand(), 0, 1, 0.6, 1.05) % 1.0;
-var shft2 = map(fxrand(), 0, 1, 0.0, 1.0) % 1.0;
-var hasAtt = fxrand() < .5;
-
-function HSVtoRGB(h, s, v) {
-    var r,
-        g,
-        b,
-        i,
-        f,
-        p,
-        q,
-        t;
-    if (arguments.length === 1) {
-        s = h.s,
-        v = h.v,
-        h = h.h;
-    }
-    i = Math.floor(h * 6);
-    f = h * 6 - i;
-    p = v * (1 - s);
-    q = v * (1 - f * s);
-    t = v * (1 - (1 - f) * s);
-    switch (i % 6) {
-        case 0:
-            r = v,
-            g = t,
-            b = p;
-            break;
-        case 1:
-            r = q,
-            g = v,
-            b = p;
-            break;
-        case 2:
-            r = p,
-            g = v,
-            b = t;
-            break;
-        case 3:
-            r = p,
-            g = q,
-            b = v;
-            break;
-        case 4:
-            r = t,
-            g = p,
-            b = v;
-            break;
-        case 5:
-            r = v,
-            g = p,
-            b = q;
-            break;
-    }
-    return [r, g, b]
-}
-
-const HSLtoRGB = (h, s, l) => {
-    //s /= 100; l /= 100;
-    h = h * 360;
-    const k = n => (n + h / 30) % 12;
-    const a = s * Math.min(l, 1 - l);
-    const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
-    return [
-        1 * f(0),
-        1 * f(8),
-        1 * f(4)
-    ];
-};
-
-function myDot(col1, col2) {
-    let dd = Math.sqrt(col1[0] * col1[0] + col1[1] * col1[1] + col1[2] * col1[2]);
-    let r = col1[0] / dd;
-    let g = col1[1] / dd;
-    let b = col1[2] / dd;
-    let dd2 = Math.sqrt(col2[0] * col2[0] + col2[1] * col2[1] + col2[2] * col2[2]);
-    let r2 = col2[0] / dd2;
-    let g2 = col2[1] / dd2;
-    let b2 = col2[2] / dd2;
-    return r * r2 + g * g2 + b * b2;
-}
-
-function windowResized() {
-    if (renderer) {
-
-        var ww = window.innerWidth || canvas.clientWidth || body.clientWidth;
-        var wh = window.innerHeight || canvas.clientHeight || body.clientHeight;
-
-        baseWidth = ress - 0;
-        baseHeight = ress - 0;
-
-        var mm = min(ww, wh);
-        winScale = mm / baseWidth;
-
-        if (ww < ress + 16 || wh < ress + 16 || true) {
-            canvasWidth = mm * omx - 133 * mm / ress;
-            canvasHeight = mm * omy - 133 * mm / ress;
-            //baseWidth = mm-16-16; baseHeight = mm-16-16;
-        }
-
-        ww = canvasWidth
-        wh = canvasHeight
-
-        // winScale = canvasWidth / ress; camera.left = -canvasWidth/2 / winScale;
-        // camera.right = +canvasWidth/2 / winScale; camera.top = +canvasHeight/2 /
-        // winScale; camera.bottom = -canvasHeight/2 / winScale;
-        // camera.updateProjectionMatrix();
-
-        postPass.uniforms.resolution.value = [
-            canvasWidth * pixelRatio,
-            canvasHeight * pixelRatio
-        ]
-        // fxaaPass.uniforms[ 'resolution' ].value.x = 1 / ( window.innerWidth *
-        // pixelRatio ); fxaaPass.uniforms[ 'resolution' ].value.y = 1 / (
-        // window.innerHeight * pixelRatio );
-        fxaaPass.uniforms.resolution.value = [
-            1 / (canvasWidth * pixelRatio),
-            1 / (canvasHeight * pixelRatio)
-        ];
-        renderer.setPixelRatio(pixelRatio);
-        //renderer.setPixelRatio( 1.0000 );
-        renderer.setSize(canvasWidth, canvasHeight);
-
-        // renderer.setClearColor( new THREE.Color(palette[0][0], palette[0][1],
-        // palette[0][2]), 1 ); renderer.clear(); renderer.domElement.id = "cnvs";
-        // renderer.domElement.style.position = "absolute";
-        // renderer.domElement.style.left = "0px"; renderer.domElement.style.top =
-        // "0px";
-        repositionCanvas(renderer.domElement);
-
-        // points.material.uniforms.u_time.value = 0;
-        // points.material.uniforms.u_scrollscale.value = scrollscale;
-        // console.log(winScale); points.material.uniforms.u_winscale.value =
-        // winScale*pixelRatio; const composer = new EffectComposer(
-        // renderer ); const renderPass = new RenderPass( scene, camera );
-        // PostProcShader.uniforms.resolution.value =
-        // [canvasWidth*pixelRatio, canvasHeight*pixelRatio];
-        // const luminosityPass = new ShaderPass( PostProcShader ); composer.addPass(
-        // renderPass ); composer.addPass( luminosityPass ); composer.render();
-        // renderer.render( scene, camera );
-    } else {
-        reset();
-    }
-}
-
-function mouseClicked() {
-    //
-}
-
-function scroll(event) {
-    // event.preventDefault(); scrollscale = scrollscale + event.deltaY * -0.002;
-    // scrollscale = Math.min(Math.max(.125, scrollscale), 6);
-}
-
-window.onmousemove = function (e) {
-    //bmseed = fxrand() * idwn;
-};
-
-let idwn = false;
-window.onmousedown = function (e) {
-    idwn = true;
-};
-
-window.onmouseup = function (e) {
-    idwn = false;
-};
-window.onclick = mouseClicked;
-window.onwheel = scroll;
-document.onkeypress = function (e) {
-    if(String.fromCharCode(e.keyCode) == 'q'){
-        reset();
-    }
-    if(String.fromCharCode(e.keyCode) == 'r'){
-        reset();
-    }
-    if(String.fromCharCode(e.keyCode) == 's'){
-        save();
-    }
-};
-
-function save(){
-    const canvas = document.getElementById("cnvs");
-    const image = canvas.toDataURL("image/png");
-    const a = document.createElement("a");
-    a.href = image.replace(/^data:image\/[^;]/, 'data:application/octet-stream');
-    a.download = fxhash + "_" + iterationCount + "_" + pixelRatio + ".png";
-    a.click();
-}
-
-const PERLIN_YWRAPB = 4;
-const PERLIN_YWRAP = 1 << PERLIN_YWRAPB;
-const PERLIN_ZWRAPB = 8;
-const PERLIN_ZWRAP = 1 << PERLIN_ZWRAPB;
-const PERLIN_SIZE = 4095;
-
-let perlin_octaves = 4;
-let perlin_amp_falloff = 0.5;
-
-const scaled_cosine = i => 0.5 * (1.0 - Math.cos(i * Math.PI));
-let perlin;
-
-var noise = function (x, y = 0, z = 0) {
-    if (perlin == null) {
-        perlin = new Array(PERLIN_SIZE + 1);
-        for (let i = 0; i < PERLIN_SIZE + 1; i++) {
-            perlin[i] = fxrand();
-        }
-    }
-
-    if (x < 0) {
-        x = -x;
-    }
-    if (y < 0) {
-        y = -y;
-    }
-    if (z < 0) {
-        z = -z;
-    }
-
-    let xi = Math.floor(x),
-        yi = Math.floor(y),
-        zi = Math.floor(z);
-    let xf = x - xi;
-    let yf = y - yi;
-    let zf = z - zi;
-    let rxf,
-        ryf;
-
-    let r = 0;
-    let ampl = 0.5;
-
-    let n1,
-        n2,
-        n3;
-
-    for (let o = 0; o < perlin_octaves; o++) {
-        let of = xi + (yi << PERLIN_YWRAPB) + (zi << PERLIN_ZWRAPB);
-
-        rxf = scaled_cosine(xf);
-        ryf = scaled_cosine(yf);
-
-        n1 = perlin[of & PERLIN_SIZE];
-        n1 += rxf * (perlin[(of + 1) & PERLIN_SIZE] - n1);
-        n2 = perlin[(of + PERLIN_YWRAP) & PERLIN_SIZE];
-        n2 += rxf * (perlin[(of + PERLIN_YWRAP + 1) & PERLIN_SIZE] - n2);
-        n1 += ryf * (n2 - n1);
-
-        of += PERLIN_ZWRAP;
-        n2 = perlin[of & PERLIN_SIZE];
-        n2 += rxf * (perlin[(of + 1) & PERLIN_SIZE] - n2);
-        n3 = perlin[(of + PERLIN_YWRAP) & PERLIN_SIZE];
-        n3 += rxf * (perlin[(of + PERLIN_YWRAP + 1) & PERLIN_SIZE] - n3);
-        n2 += ryf * (n3 - n2);
-
-        n1 += scaled_cosine(zf) * (n2 - n1);
-
-        r += n1 * ampl;
-        ampl *= perlin_amp_falloff;
-        xi <<= 1;
-        xf *= 2;
-        yi <<= 1;
-        yf *= 2;
-        zi <<= 1;
-        zf *= 2;
-
-        if (xf >= 1.0) {
-            xi++;
-            xf--;
-        }
-        if (yf >= 1.0) {
-            yi++;
-            yf--;
-        }
-        if (zf >= 1.0) {
-            zi++;
-            zf--;
-        }
-    }
-    return r;
-};
-
-var noiseDetail = function (lod, falloff) {
-    if (lod > 0) {
-        perlin_octaves = lod;
-    }
-    if (falloff > 0) {
-        perlin_amp_falloff = falloff;
-    }
-};
-
-var noiseSeed = function (seed) {
-    const lcg = (() => {
-        const m = 4294967296;
-        const a = 1664525;
-        const c = 1013904223;
-        let seed,
-            z;
-        return {
-            setSeed(val) {
-                z = seed = (
-                    val == null
-                        ? fxrand() * m
-                        : val
-                ) >>> 0;
-            },
-            getSeed() {
-                return seed;
-            },
-            rand() {
-                z = (a * z + c) % m;
-                return z / m;
-            }
-        };
-    })();
-
-    lcg.setSeed(seed);
-    perlin = new Array(PERLIN_SIZE + 1);
-    for (let i = 0; i < PERLIN_SIZE + 1; i++) {
-        perlin[i] = lcg.rand();
-    }
-};
-
-function subVec(v1, v2) {
-    return new myVec(v1.x - v2.x, v1.y - v2.y, v1.z - v2.z);
-}
-
-function addVec(v1, v2) {
-    return new myVec(v1.x + v2.x, v1.y + v2.y, v1.z + v2.z);
-}
-
-function issamepoint(p1, p2) {
-    return p1.dist(p2) < 0.1;
-}
-
-function radians(val) {
-    return val / 180 * Math.PI;
-}
-
-function random(a, b) {
-    return map(fxrand(), 0, 1, a, b);
-}
-
-function findLineIntersection(u, w, v, z) {
-    var uw = subVec(w, u);
-    var vz = subVec(z, v);
-    var uv = subVec(v, u);
-    let beta = uw.angleBetween(vz);
-    if (beta < radians(0.1)) 
-        return false;
-    let alfa = uw.angleBetween(uv);
-
-    var vz_ = subVec(z, v);
-    vz_.normalize();
-    var mmag = -uv.mag() * sin(alfa) / sin(beta);
-    if (mmag < 0 || mmag > vz.mag()) 
-        return false;
-    vz_.mult(mmag);
-    var res = addVec(v, vz_);
-    return res;
-}
-
-function onSegment(p, q, r) {
-    if (q.x <= max(p.x, r.x) && q.x >= min(p.x, r.x) && q.y <= max(p.y, r.y) && q.y >= min(p.y, r.y)) 
-        return true;
     
-    return false;
-}
+    realCamera.position.x = camera.position.x + 4*vector.x + right.x;
+    realCamera.position.y = camera.position.y + 4*vector.y + right.y;
+    realCamera.position.z = camera.position.z + 4*vector.z + right.z;
+    realCamera.rotation.x = camera.rotation.x + (.3 + .7*amp)*.05*(-.5 + power(noise(frameCount*0.03, .213), 3));
+    realCamera.rotation.y = camera.rotation.y + (.3 + .7*amp)*.05*(-.5 + power(noise(frameCount*0.03, 12.55), 3));
+    realCamera.rotation.z = camera.rotation.z + (.3 + .7*amp)*.05*(-.5 + power(noise(frameCount*0.01, 42.6), 3));
 
-function triorientation(p, q, r) {
-    // See https://www.geeksforgeeks.org/orientation-3-ordered-points/ for details
-    // of below formula.
-    var val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
-
-    if (val == 0) 
-        return 0; // collinear
     
-    return (val > 0)
-        ? 1
-        : 2; // clock or counterclock wise
-}
+    display.position.x = camera.position.x + .2*vector.x + down.x + right.x + right.x*(.3 + .7*amp)*.015*(-.5 + power(noise(frameCount*0.03, 6.65), 3));
+    display.position.y = camera.position.y + .2*vector.y + down.y + right.y + right.y*(.3 + .7*amp)*.15*(-.5 + power(noise(frameCount*0.03, 31.56), 3));
+    display.position.z = camera.position.z + .2*vector.z + down.z + right.z + right.z*(.3 + .7*amp)*.015*(-.5 + power(noise(frameCount*0.03, 17.25), 3));
+    display.rotation.x = realCamera.rotation.x;
+    display.rotation.y = realCamera.rotation.y;
+    display.rotation.z = realCamera.rotation.z;
+    //realCamera.lookAt(scene.position);
 
-function doLinesIntersect(p1, q1, p2, q2) {
-    // Find the four orientations needed for general and special cases
-    var o1 = triorientation(p1, q1, p2);
-    var o2 = triorientation(p1, q1, q2);
-    var o3 = triorientation(p2, q2, p1);
-    var o4 = triorientation(p2, q2, q1);
+    camcontrols.update();
+    //renderer.render( scene, camera );
 
-    // General case
-    if (o1 != o2 && o3 != o4) 
-        return true;
-    
-    // Special Cases p1, q1 and p2 are collinear and p2 lies on segment p1q1
-    if (o1 == 0 && onSegment(p1, p2, q1)) 
-        return true;
-    
-    // p1, q1 and q2 are collinear and q2 lies on segment p1q1
-    if (o2 == 0 && onSegment(p1, q2, q1)) 
-        return true;
-    
-    // p2, q2 and p1 are collinear and p1 lies on segment p2q2
-    if (o3 == 0 && onSegment(p2, p1, q2)) 
-        return true;
-    
-    // p2, q2 and q1 are collinear and q1 lies on segment p2q2
-    if (o4 == 0 && onSegment(p2, q1, q2)) 
-        return true;
-    
-    return false; // Doesn't fall in any of the above cases
-}
+    renderer.setRenderTarget(displayTarget);
+    renderer.render( scene, realCamera );
+    display.material.uniforms.sceneRender.value = displayTarget.texture;
+    display.material.uniforms.seed.value = fxrand();
 
-function isinside(point, poly) {
-    let wn = 0;
+    renderer.setRenderTarget(null);
 
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        let pi = poly[i];
-        let pj = poly[j];
-
-        if (pj.y <= point.y) {
-            if (pi.y > point.y) {
-                if (isLeft(pj, pi, point) > 0) {
-                    wn++;
-                }
-            }
-        } else {
-            if (pi.y <= point.y) {
-                if (isLeft(pj, pi, point) < 0) {
-                    wn--;
-                }
-            }
-        }
-    }
-    return wn != 0;
+    composer.render();
+    frameCount++;
 };
 
-function isLeft(P0, P1, P2) {
-    let res = ((P1.x - P0.x) * (P2.y - P0.y) - (P2.x - P0.x) * (P1.y - P0.y));
-    return res;
-}
-
-class MyCurve extends THREE.Curve {
-
-	constructor( hobbycurve, offset) {
-
-		super();
-
-		this.hobbycurve = hobbycurve;
-		this.offset = offset;
-        this.length = this.hobbycurve.length;
-        this.dis = 1./(this.length-1.);
-	}
-
-	getPoint( t, optionalTarget = new THREE.Vector3() ) {
-
-        var idx1 = Math.floor(t/this.dis);
-        var idx2 = idx1+1;
-        var p = (t - this.dis*idx1)/this.dis;
-        if(isNaN(t)){
-            idx1 = this.length-2;
-            idx2 = this.length-1;
-            p = 1.0;
-        }
-        else{
-            if(t == 1.0){
-                idx1 = this.length-2;
-                idx2 = this.length-1;
-                p = 1.0;
-            }
-        }
-
-        let p1 = this.hobbycurve[idx1];
-        let p2 = this.hobbycurve[idx2];
-
-
-		const tx = lerp(p1.x, p2.x, p) + this.offset.x;
-		const ty = lerp(p1.y, p2.y, p) + this.offset.y;
-		const tz = lerp(p1.z, p2.z, p) + this.offset.z;
-
-		return optionalTarget.set( tx, tz, ty );
-	}
-
-}
-
-class Tube extends THREE.BufferGeometry {
-    constructor(path, tubularSegments = 64, radius = 1, radialSegments = 8, closed = false) {
-
-		super();
-
-		this.type = 'TubeGeometry';
-
-		this.parameters = {
-			path: path,
-			tubularSegments: tubularSegments,
-			radius: radius,
-			radialSegments: radialSegments,
-			closed: closed
-		};
-        const frames = path.computeFrenetFrames(tubularSegments, closed);
-
-        // expose internals
-
-        this.tangents = frames.tangents;
-        this.normals = frames.normals;
-        this.binormals = frames.binormals;
-
-        // helper variables
-
-        const vertex = new THREE.Vector3();
-        const normal = new THREE.Vector3();
-        const uv = new THREE.Vector2();
-        let P = new THREE.Vector3();
-
-        // buffer
-
-        const vertices = [];
-        const normals = [];
-        const uvs = [];
-        const indices = [];
-
-        // create buffer data
-
-        generateBufferData();
-
-        // build geometry
-
-        this.setIndex(indices);
-        this.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-        this.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-        this.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-
-        // functions
-
-        function generateBufferData() {
-
-            for (let i = 0; i < tubularSegments; i++) {
-
-                generateSegment(i);
-
-            }
-
-            // if the geometry is not closed, generate the last row of vertices and normals
-            // at the regular position on the given path
-            //
-            // if the geometry is closed, duplicate the first row of vertices and normals
-            // (uvs will differ)
-
-            generateSegment(
-                (closed === false)
-                    ? tubularSegments
-                    : 0
-            );
-
-            // uvs are generated in a separate function. this makes it easy compute correct
-            // values for closed geometries
-
-            generateUVs();
-
-            // finally create faces
-
-            generateIndices();
-
-        }
-
-        function generateSegment(i) {
-
-            // we use getPointAt to sample evenly distributed points from the given path
-
-            P = path.getPointAt(i / tubularSegments, P);
-
-            // retrieve corresponding normal and binormal
-
-            const N = frames.normals[i];
-            const B = frames.binormals[i];
-
-            // generate normals and vertices for the current segment
-
-            for (let j = 0; j <= radialSegments; j++) {
-                let amp = 1;
-
-                if(i <= 40){
-                    amp = map(i, 0, 40, 0, 1);
-                }
-                if(i > tubularSegments-40){
-                    amp = map(i, tubularSegments-40, tubularSegments, 1, 0);
-                }
-                amp = .2 + .8*power(amp, 2);
-
-                const v = j / radialSegments * Math.PI * 2;
-
-                const sin = Math.sin(v);
-                const cos = -Math.cos(v);
-
-                // normal
-
-                normal.x = (cos * N.x + sin * B.x);
-                normal.y = (cos * N.y + sin * B.y);
-                normal.z = (cos * N.z + sin * B.z);
-                normal.normalize();
-
-                normals.push(normal.x, normal.y, normal.z);
-
-                // vertex
-                let nz = .4 + .6*power(noise(i*0.04, 5583.33), 4);
-                let rradius = radius * nz * amp;
-                vertex.x = P.x + rradius * normal.x;
-                vertex.y = P.y + rradius * normal.y;
-                vertex.z = P.z + rradius * normal.z;
-
-                vertices.push(vertex.x, vertex.y, vertex.z);
-
-            }
-
-        }
-
-        function generateIndices() {
-
-            for (let j = 1; j <= tubularSegments; j++) {
-
-                for (let i = 1; i <= radialSegments; i++) {
-
-                    const a = (radialSegments + 1) * (j - 1) + (i - 1);
-                    const b = (radialSegments + 1) * j + (i - 1);
-                    const c = (radialSegments + 1) * j + i;
-                    const d = (radialSegments + 1) * (j - 1) + i;
-
-                    // faces
-
-                    indices.push(a, b, d);
-                    indices.push(b, c, d);
-
-                }
-
-            }
-
-        }
-
-        function generateUVs() {
-
-            for (let i = 0; i <= tubularSegments; i++) {
-
-                for (let j = 0; j <= radialSegments; j++) {
-
-                    uv.x = i / tubularSegments;
-                    uv.y = j / radialSegments;
-
-                    uvs.push(uv.x, uv.y);
-
-                }
-
-            }
-
-        }
-    }
-    
-	toJSON() {
-
-		const data = super.toJSON();
-
-		data.path = this.parameters.path.toJSON();
-
-		return data;
-
-	}
-
-	static fromJSON( data ) {
-
-		// This only works for built-in curves (e.g. CatmullRomCurve3).
-		// User defined curves or instances of CurvePath will not be deserialized.
-		return new TubeGeometry(
-			new Curves[ data.path.type ]().fromJSON( data.path ),
-			data.tubularSegments,
-			data.radius,
-			data.radialSegments,
-			data.closed
-		);
-
-	}
-}
-
-
-
-function getCompositionImpl() {
-    var rulelevel = 8;
-    var s = 'sqrt((x-0.5)*(x-0.5))';
-    s = 'x*y';
-    var rules = [];
-    for (var k = 0; k < 15; k++) {
-        var r1 = random(1, 10);
-        var r2 = random(1, 10);
-        var r3 = random(.1, 3.);
-        var r4 = random(.1, 3.);
-        var r5 = Math.round(random(3, 10))*1.000001;
-        var r6 = Math.round(random(3, 10)) * 1.000001;
-        var r7 = random(3, 10);
-        var r8 = random(2, 100);
-        var r9 = random(2, 100);
-        var trules = [
-            `(mod(x, y))`,
-            `(mod(y, x))`,
-            `(x+y+uTime*0.0003)`,
-            `(x*y+uTime*0.0003)`,
-            `(1.-x+uTime*0.0003)`,
-            `(1.-y+uTime*0.0003)`,
-            `(.5 + .5*sin(${r1}*x + uTime*0.003))`,
-            `(.5 + .5*sin(${r2}*y + uTime*0.003))`,
-            `(pow(x, ${r3})+uTime*0.0003)`,
-            `(pow(y, ${r4}))`,
-            `(1.-x+uTime*0.0003)`,
-            `(1.-y+uTime*0.0003)`,
-            `(1./y)`,
-            `(1./x)`,
-            `(fbm(vec2(x*11. + uTime*0.0003, x*1. + uTime*0.0003)))`,
-            `(fbm(vec2(y*11. + uTime*0.0003, y*1. + uTime*0.0003)))`,
-        ]
-        var trul2es = [
-            `(x+y)`,
-            `(x*y)`,
-            `(fbm(vec2(x*${r7} + uTime*0.0003, y*${r4} + uTime*0.0003+${r5})))`,
-        ]
-       
-        rules = rules.concat(trules);
-    }
-
-    for (var k = 0; k < rulelevel; k++) {
-        var rrules = rules;
-        var ns = '';
-        for (var i = 0; i < s.length; i++) {
-            if (s[i] == 'x' || s[i] == 'y') {
-                var chc = Math.floor(random(0, rrules.length));
-                while (!rrules[chc].includes(s[i])) {
-                    chc = Math.floor(random(0, rrules.length));
-                }
-                ns += rrules[chc]
-            }
-            else {
-                ns += s[i];
-            }
-        }
-        s = ns;
-    }
-
-    return s;
-}
-
-function getComposition() {
-    let  avgr = 0;
-    let  avgd = 0;
-    let  maxd = 0;
-    let  sum = 0;
-    let zas = true;
-    let  comp = '';
-    //while((maxd < .2 || avgd < .2 || avgr < .2) || zas || sum == 0){
-    while (sum < .1 || maxd < .01 || isNaN(maxd)) {
-        zas = false;
-        comp = getCompositionImpl();
-        return comp;
-        var vals = [];
-        maxd = 0;
-        var nn = 5;
-        for (var j = 0; j < nn; j++) {
-            for (var i = 0; i < Math.round(nn * resx / resy); i++) {
-                var X = ((i) % nn + 1) / nn;
-                var Y = ((j) % nn + 1) / nn * resy / resx;
-                //rez = (eval(comp) + 0.)%1;
-
-                rez = Math.round(eval(comp) * 100);
-                if (isNaN(rez))
-                    zas = true;
-                vals.push(rez);
-            }
-        }
-        sum = 0;
-        for (var k = 0; k < vals.length; k++) {
-            if (!isNaN(vals[k]) && isFinite(vals[k]))
-                sum += vals[k];
-        }
-        avgr = sum / vals.length;
-
-        var sumd = 0;
-        for (var k = 0; k < vals.length; k++) {
-            sumd += abs(vals[k] - avgr);
-            maxd = max(maxd, abs(vals[k] - avgr));
-        }
-        avgd = sumd / vals.length;
-        //print('hello')
-
-    }
-    return comp;
-}
+setup();
+animate();
